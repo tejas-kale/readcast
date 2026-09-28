@@ -289,7 +289,6 @@ ui <- shiny::fluidPage(
       shiny::tags$div(class = "status", shiny::textOutput("publish_status")),
       shiny::tags$div(class = "eyebrow", "Podcast episode"),
       shiny::textInput("episode_title", "Episode title", value = ""),
-      shiny::uiOutput("episode_description_input"),
       shiny::actionButton("publish_episode", "Publish episode and RSS feed", class = "generate-button"),
       shiny::tags$div(class = "status", shiny::textOutput("episode_status")),
       shiny::tags$div(class = "status", shiny::textOutput("status")),
@@ -355,10 +354,6 @@ server <- function(input, output, session) {
   output$cover_status <- shiny::renderText(cover_state$status)
   output$publish_status <- shiny::renderText(publish_state$status)
   output$episode_status <- shiny::renderText(publish_state$episode_status)
-  output$episode_description_input <- shiny::renderUI({
-    if (is.null(input$article) || !nzchar(input$article) || !nzchar(article()$description)) return(NULL)
-    shiny::textAreaInput("episode_description", "Episode description from clipping metadata", value = article()$description, rows = 3)
-  })
   output$setup_clippings_result <- shiny::renderText(setup_state$clippings$message)
   output$setup_openrouter_result <- shiny::renderText(setup_state$openrouter$message)
   output$setup_hosting_result <- shiny::renderText(setup_state$hosting$message)
@@ -369,7 +364,6 @@ server <- function(input, output, session) {
     if (is.null(input$article) || !nzchar(input$article)) return()
     item <- article()
     shiny::updateTextInput(session, "episode_title", value = default_episode_title(item$title, input$model %||% "", input$voice %||% ""))
-    shiny::updateTextAreaInput(session, "episode_description", value = item$description %||% "")
   }, ignoreInit = TRUE)
 
   shiny::observeEvent(input$open_setup, {
@@ -516,13 +510,13 @@ server <- function(input, output, session) {
     if (is.null(episode)) {
       item <- article()
       episode <- confirm_podcast_eligibility(path, eligible, input$episode_title,
-        if (nzchar(item$description)) input$episode_description else "", input$model, input$voice)
+        item$description, input$model, input$voice)
     } else if (!identical(episode$eligible, "true")) {
       publish_state$episode_status <- "This clipping was marked ineligible. Its decision is saved."
       return(invisible(NULL))
     } else {
       episode$title <- trimws(input$episode_title)
-      episode$description <- if (nzchar(article()$description)) trimws(input$episode_description) else ""
+      episode$description <- article()$description
       episode$model <- input$model
       episode$voice <- input$voice
     }
@@ -543,7 +537,7 @@ server <- function(input, output, session) {
     path <- tryCatch(selected_path(), error = function(error) NULL)
     if (is.null(path)) return()
     episode <- read_podcast_episode(path, input$model, input$voice)
-    if (is.null(episode)) {
+    if (is.null(episode) && is.null(read_podcast_eligibility(path))) {
       shiny::showModal(shiny::modalDialog(title = "Confirm podcast eligibility",
         shiny::p("Is this clipping eligible for podcast publication? Confirm that you have the rights to publish its narration and metadata."),
         footer = shiny::tagList(shiny::actionButton("confirm_episode_eligible", "Yes, publish this clipping"), shiny::actionButton("deny_episode_eligible", "No, mark ineligible"), shiny::modalButton("Cancel")), easyClose = TRUE))
@@ -562,7 +556,7 @@ server <- function(input, output, session) {
     tryCatch({
       item <- article()
       confirm_podcast_eligibility(selected_path(), FALSE, input$episode_title,
-        if (nzchar(item$description)) input$episode_description else "", input$model, input$voice)
+        item$description, input$model, input$voice)
       publish_state$episode_status <- "This clipping was marked ineligible. Its decision is saved."
     }, error = function(error) {
       publish_state$episode_status <- conditionMessage(error)

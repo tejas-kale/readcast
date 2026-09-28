@@ -10,18 +10,47 @@ and voice IDs, so alternate narrations can become separate episodes.
 * Per-clipping publication decisions
 
 #+begin_src R
-podcast_episode_id <- function(clipping_path, model, voice) {
+podcast_clipping_title <- function(clipping_path) {
   if (length(clipping_path) != 1L || !file.exists(clipping_path) || dir.exists(clipping_path)) stop("Select an existing clipping before publishing.", call. = FALSE)
-  if (length(model) != 1L || length(voice) != 1L || is.na(model) || is.na(voice) || !nzchar(model) || !nzchar(voice)) stop("Episode identity requires the exact narration model and voice.", call. = FALSE)
   article <- readLines(clipping_path, warn = FALSE)
   header <- grep("^---[[:space:]]*$", article)
-  title <- if (length(header) >= 2L && header[[1L]] == 1L) {
+  if (length(header) >= 2L && header[[1L]] == 1L) {
     metadata <- tryCatch(yaml::yaml.load(paste(article[(header[[1L]] + 1L):(header[[2L]] - 1L)], collapse = "\n")), error = function(error) NULL)
-    if (is.list(metadata)) as.character((metadata$title %||% tools::file_path_sans_ext(basename(clipping_path)))[[1L]]) else tools::file_path_sans_ext(basename(clipping_path))
-  } else tools::file_path_sans_ext(basename(clipping_path))
+    if (is.list(metadata)) return(as.character((metadata$title %||% tools::file_path_sans_ext(basename(clipping_path)))[[1L]]))
+  }
+  tools::file_path_sans_ext(basename(clipping_path))
+}
+
+podcast_episode_id <- function(clipping_path, model, voice) {
+  if (length(model) != 1L || length(voice) != 1L || is.na(model) || is.na(voice) || !nzchar(model) || !nzchar(voice)) stop("Episode identity requires the exact narration model and voice.", call. = FALSE)
+  title <- podcast_clipping_title(clipping_path)
   fields <- enc2utf8(c(title, as.character(model), as.character(voice)))
   identity <- paste0(vapply(fields, function(field) paste0(nchar(field, type = "bytes"), ":", field), character(1)), collapse = "")
   digest::digest(identity, algo = "sha256", serialize = FALSE)
+}
+
+podcast_eligibility_path <- function(clipping_path, state_dir = path.expand("~/.local/share/readcast/podcast-episodes")) {
+  title <- enc2utf8(podcast_clipping_title(clipping_path))
+  key <- digest::digest(title, algo = "sha256", serialize = FALSE)
+  file.path(state_dir, "eligibility", paste0(key, ".dcf"))
+}
+
+read_podcast_eligibility <- function(clipping_path, state_dir = path.expand("~/.local/share/readcast/podcast-episodes")) {
+  path <- podcast_eligibility_path(clipping_path, state_dir)
+  if (!file.exists(path)) return(NULL)
+  stored <- tryCatch(read.dcf(path), error = function(error) NULL)
+  if (is.null(stored) || !nrow(stored)) stop("Saved clipping eligibility is unreadable.", call. = FALSE)
+  as.list(stored[1L, , drop = TRUE])
+}
+
+save_podcast_eligibility <- function(clipping_path, eligible, state_dir = path.expand("~/.local/share/readcast/podcast-episodes")) {
+  path <- podcast_eligibility_path(clipping_path, state_dir)
+  dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+  temporary <- tempfile("eligibility-", tmpdir = dirname(path))
+  on.exit(unlink(temporary), add = TRUE)
+  write.dcf(data.frame(eligible = if (eligible) "true" else "false", clipping_title = podcast_clipping_title(clipping_path)), temporary)
+  if (!file.rename(temporary, path)) stop("Could not save clipping eligibility.", call. = FALSE)
+  invisible(path)
 }
 
 podcast_episode_path <- function(clipping_path, model, voice, state_dir = path.expand("~/.local/share/readcast/podcast-episodes")) {
@@ -49,11 +78,16 @@ save_podcast_episode <- function(clipping_path, episode, state_dir = path.expand
   invisible(episode)
 }
 
-confirm_podcast_eligibility <- function(clipping_path, eligible, title, description = "", model, voice,
+confirm_podcast_eligibility <- function(clipping_path, eligible = NULL, title, description = "", model, voice,
                                         state_dir = path.expand("~/.local/share/readcast/podcast-episodes")) {
   prior <- read_podcast_episode(clipping_path, model, voice, state_dir)
   if (!is.null(prior)) return(prior)
-  if (length(eligible) != 1L || is.na(eligible)) stop("Confirm whether this clipping is eligible for podcast publication.", call. = FALSE)
+  decision <- read_podcast_eligibility(clipping_path, state_dir)
+  if (is.null(decision)) {
+    if (length(eligible) != 1L || is.na(eligible)) stop("Confirm whether this clipping is eligible for podcast publication.", call. = FALSE)
+    save_podcast_eligibility(clipping_path, eligible, state_dir)
+  } else eligible <- identical(decision$eligible, "true")
+  if (!eligible) return(list(eligible = "false", model = model, voice = voice))
   id <- podcast_episode_id(clipping_path, model, voice)
   title <- trimws(title)
   if (!nzchar(title)) stop("Enter an episode title before confirming eligibility.", call. = FALSE)
@@ -144,7 +178,8 @@ verify_public_resource <- function(url, expected_type = NULL, expected_length = 
   if (status < 200L || status >= 300L) stop("Public resource is not reachable yet (HTTP ", status, "): ", url, call. = FALSE)
   if (!is.null(expected_type)) {
     content_type <- httr2::resp_header(response, "content-type", default = "")
-    if (!startsWith(tolower(content_type), tolower(expected_type))) stop("Public resource has unexpected content type at ", url, ".", call. = FALSE)
+    media_type <- tolower(trimws(strsplit(content_type, ";", fixed = TRUE)[[1L]][[1L]]))
+    if (!identical(media_type, tolower(expected_type))) stop("Public resource has unexpected content type at ", url, ".", call. = FALSE)
   }
   if (!is.null(expected_length)) {
     content_length <- httr2::resp_header(response, "content-length", default = "")

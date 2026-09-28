@@ -23,7 +23,8 @@ testthat::test_that("eligibility and episode identity persist per clipping", {
   other <- file.path(directory, "other.md")
   writeLines("# Other", other)
   denied <- confirm_podcast_eligibility(other, FALSE, "Other", "", "model", "voice", directory)
-  testthat::expect_identical(read_podcast_episode(other, "model", "voice", directory)$eligible, "false")
+  testthat::expect_identical(read_podcast_eligibility(other, directory)$eligible, "false")
+  testthat::expect_null(read_podcast_episode(other, "model", "voice", directory))
   testthat::expect_false(identical(denied$guid, episode$guid))
 })
 
@@ -53,6 +54,7 @@ testthat::test_that("Pages publication rejects failed requests and verifies publ
   testthat::expect_no_error(publish_pages_file("owner", "repo", "feed.xml", charToRaw("feed"), "token", fake))
   testthat::expect_length(calls, 2L)
   testthat::expect_error(verify_public_resource("https://reader.github.io/missing", perform = function(request) httr2::response(status_code = 404L, url = request$url)), "not reachable")
+  testthat::expect_error(verify_public_resource("https://audio.example/file", "audio/mpeg", perform = function(request) httr2::response(url = request$url, headers = list(`content-type` = "audio/mpeg-evil"))), "unexpected content type")
 })
 
 testthat::test_that("episode publication verifies audio, cover and the live RSS enclosure", {
