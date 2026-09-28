@@ -1,4 +1,4 @@
-default_cover_prompt <- paste(
+default_cover_prompt <- function() paste(
   "Create polished, distinctive square podcast cover artwork. Use a solid opaque background,",
   "clear high contrast, and a central composition that remains legible as a small thumbnail.",
   "Do not include an Apple logo, device, or hardware."
