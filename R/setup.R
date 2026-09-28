@@ -8,6 +8,10 @@ readcast_setup_settings <- function(config_dir = path.expand("~/.config/readcast
   list(
     clippings_dir = Sys.getenv("CLIPPINGS_DIR", unset = if (file.exists(clipping_file)) trimws(readLines(clipping_file, warn = FALSE, n = 1L)) else stored_value("clippings_dir")),
     github_pages_url = Sys.getenv("READCAST_PAGES_URL", unset = stored_value("github_pages_url")),
+    podcast_title = stored_value("podcast_title", "Readcast"),
+    podcast_description = stored_value("podcast_description", "A personal collection of narrated articles."),
+    podcast_language = stored_value("podcast_language", "en"),
+    podcast_explicit = stored_value("podcast_explicit", "false"),
     r2_account_id = Sys.getenv("R2_ACCOUNT_ID", unset = stored_value("r2_account_id")),
     r2_bucket = Sys.getenv("R2_BUCKET", unset = stored_value("r2_bucket")),
     worker_url = Sys.getenv("READCAST_WORKER_URL", unset = stored_value("worker_url"))
@@ -22,7 +26,7 @@ setup_url_for_display <- function(value) {
 }
 
 save_readcast_setup_settings <- function(settings, config_dir = path.expand("~/.config/readcast")) {
-  allowed <- c("clippings_dir", "github_pages_url", "r2_account_id", "r2_bucket", "worker_url")
+  allowed <- c("clippings_dir", "github_pages_url", "podcast_title", "podcast_description", "podcast_language", "podcast_explicit", "r2_account_id", "r2_bucket", "worker_url")
   if (any(!names(settings) %in% allowed)) stop("Only non-secret Readcast settings can be saved.", call. = FALSE)
   if (!dir.create(config_dir, recursive = TRUE, showWarnings = FALSE) && !dir.exists(config_dir)) stop("Cannot create Readcast configuration directory.", call. = FALSE)
   settings <- as.list(settings[allowed[allowed %in% names(settings)]])

@@ -9,6 +9,8 @@ testthat::test_that("personal setup persists only allowed non-secret settings", 
   dir.create(config)
   writeLines("/old/from-cli", file.path(config, "clippings-dir"))
   settings <- list(clippings_dir = "/tmp/clippings", github_pages_url = "https://reader.github.io/podcast/",
+                   podcast_title = "Readcast", podcast_description = "A personal collection of narrated articles.",
+                   podcast_language = "en", podcast_explicit = "false",
                    r2_account_id = "account-id", r2_bucket = "readcast-audio", worker_url = "https://audio.account.workers.dev")
   save_readcast_setup_settings(settings, config)
   testthat::expect_identical(readcast_setup_settings(config), settings)
