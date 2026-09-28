@@ -291,6 +291,8 @@ ui <- shiny::fluidPage(
       shiny::textInput("episode_title", "Episode title", value = ""),
       shiny::actionButton("publish_episode", "Publish episode and RSS feed", class = "generate-button"),
       shiny::tags$div(class = "status", shiny::textOutput("episode_status")),
+      shiny::actionButton("cleanup_audio", "Review aged audio cleanup", class = "generate-button"),
+      shiny::tags$div(class = "status", shiny::textOutput("cleanup_status")),
       shiny::tags$div(class = "status", shiny::textOutput("status")),
       shiny::tags$p(class = "help-text keyboard-help",
         shiny::tags$kbd("/"), "/", shiny::tags$kbd("a"), " find article · ", shiny::tags$kbd("m"), " model · ", shiny::tags$kbd("v"), " voice", shiny::tags$br(),
@@ -313,7 +315,7 @@ server <- function(input, output, session) {
   models <- discover_tts_models()
   state <- shiny::reactiveValues(job = NULL, status = "Choose an article to begin.", refresh = 0L)
   cover_state <- shiny::reactiveValues(status = "Edit the prompt, then generate a cover candidate.", refresh = 0L)
-  publish_state <- shiny::reactiveValues(status = "Publishing is optional; configure R2 to host an episode.", episode_status = "Confirm eligibility before the first publication of each clipping.")
+  publish_state <- shiny::reactiveValues(status = "Publishing is optional; configure R2 to host an episode.", episode_status = "Confirm eligibility before the first publication of each clipping.", cleanup_status = "Cleanup checks the live feed and retains replaced audio for at least 30 days.")
   setup_state <- shiny::reactiveValues(
     clippings = list(ok = FALSE, message = "Choose your Clippings export folder, then run this check."),
     openrouter = list(ok = FALSE, message = "Set OPENROUTER_API_KEY in your shell environment, then run this check."),
@@ -354,6 +356,7 @@ server <- function(input, output, session) {
   output$cover_status <- shiny::renderText(cover_state$status)
   output$publish_status <- shiny::renderText(publish_state$status)
   output$episode_status <- shiny::renderText(publish_state$episode_status)
+  output$cleanup_status <- shiny::renderText(publish_state$cleanup_status)
   output$setup_clippings_result <- shiny::renderText(setup_state$clippings$message)
   output$setup_openrouter_result <- shiny::renderText(setup_state$openrouter$message)
   output$setup_hosting_result <- shiny::renderText(setup_state$hosting$message)
@@ -543,6 +546,24 @@ server <- function(input, output, session) {
       shiny::p("In Apple Podcasts, choose Add a Show by URL, paste the feed URL, and follow the show."), footer = shiny::modalButton("Done"), easyClose = TRUE))
     invisible(result)
   }
+
+  shiny::observeEvent(input$cleanup_audio, {
+    shiny::showModal(shiny::modalDialog(title = "Clean up replaced podcast audio?",
+      shiny::p("Readcast will fetch the current live RSS feed and delete only replaced audio objects that are at least 30 days old and no longer referenced by that feed. Failed deletions remain available for retry."),
+      footer = shiny::tagList(shiny::actionButton("confirm_audio_cleanup", "Delete eligible audio"), shiny::modalButton("Cancel")), easyClose = TRUE))
+  })
+
+  shiny::observeEvent(input$confirm_audio_cleanup, {
+    shiny::removeModal()
+    tryCatch({
+      result <- cleanup_published_podcast_audio()
+      publish_state$cleanup_status <- paste0("Audio cleanup complete. Deleted ", length(result$deleted), " object(s); ", length(result$failed), " deletion(s) will be retried next time.")
+      shiny::showNotification(publish_state$cleanup_status, type = if (length(result$failed)) "warning" else "message")
+    }, error = function(error) {
+      publish_state$cleanup_status <- conditionMessage(error)
+      shiny::showNotification(publish_state$cleanup_status, type = "error", duration = NULL)
+    })
+  })
 
   shiny::observeEvent(input$publish_episode, {
     path <- tryCatch(selected_path(), error = function(error) NULL)

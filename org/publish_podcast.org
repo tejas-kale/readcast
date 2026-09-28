@@ -144,9 +144,35 @@ cleanup_podcast_audio <- function(state_dir, feed, delete_audio, now = Sys.time(
     age <- as.numeric(difftime(now, as.POSIXct(entry$retired_at, tz = "UTC"), units = "days"))
     is.finite(age) && age >= retention_days && !entry$url %in% referenced
   }, logical(1))
-  for (index in which(eligible)) delete_audio(entries[[index]]$key)
-  if (any(eligible)) save_podcast_retention(entries[!eligible], state_dir)
-  invisible(vapply(entries[eligible], `[[`, character(1), "key"))
+  deleted <- eligible & vapply(seq_along(entries), function(index) {
+    if (!eligible[[index]]) return(FALSE)
+    tryCatch({ delete_audio(entries[[index]]$key); TRUE }, error = function(error) FALSE)
+  }, logical(1))
+  if (any(deleted)) save_podcast_retention(entries[!deleted], state_dir)
+  list(deleted = vapply(entries[deleted], `[[`, character(1), "key"),
+       failed = vapply(entries[eligible & !deleted], `[[`, character(1), "key"))
+}
+
+cleanup_published_podcast_audio <- function(config_dir = path.expand("~/.config/readcast"),
+                                            data_dir = path.expand("~/.local/share/readcast/podcast-episodes"),
+                                            perform = httr2::req_perform, delete_audio = delete_r2_audio_object,
+                                            now = Sys.time()) {
+  settings <- readcast_setup_settings(config_dir)
+  feed_url <- paste0(sub("/$", "", settings$github_pages_url), "/feed.xml")
+  response <- httr2::request(feed_url) |>
+    httr2::req_method("GET") |>
+    httr2::req_timeout(30) |>
+    httr2::req_error(is_error = function(resp) FALSE) |>
+    perform()
+  status <- httr2::resp_status(response)
+  if (status < 200L || status >= 300L) stop("The public podcast feed is unavailable (HTTP ", status, "); refusing to delete audio.", call. = FALSE)
+  feed <- httr2::resp_body_string(response)
+  document <- tryCatch(xml2::read_xml(feed), error = function(error) NULL)
+  if (is.null(document) || !identical(xml2::xml_name(document), "rss") || inherits(xml2::xml_find_first(document, "/rss/channel"), "xml_missing")) {
+    stop("The public podcast feed is unreadable; refusing to delete audio.", call. = FALSE)
+  }
+  cleanup_podcast_audio(data_dir, feed,
+    delete_audio = function(key) delete_audio(key, config_dir = config_dir), now = now)
 }
 #+end_src
 

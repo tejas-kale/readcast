@@ -87,8 +87,62 @@ testthat::test_that("audio retention waits 30 days and protects URLs still in th
   deleted <- character()
   result <- cleanup_podcast_audio(directory, feed, function(key) deleted <<- c(deleted, key), now = as.POSIXct("2024-03-01", tz = "UTC"))
   testthat::expect_identical(deleted, "audio/old.mp3")
-  testthat::expect_identical(result, "audio/old.mp3")
+  testthat::expect_identical(result$deleted, "audio/old.mp3")
+  testthat::expect_length(result$failed, 0L)
   testthat::expect_length(read_podcast_retention(directory), 2L)
+  unreferenced_feed <- build_podcast_feed(list(list(eligible = "true", title = "Other", guid = "other", published = "", audio_url = "https://audio.example/audio/other.mp3", audio_size = "1")), "https://pages.example")
+  failed_result <- cleanup_podcast_audio(directory, unreferenced_feed, function(key) stop("R2 unavailable"), now = as.POSIXct("2024-03-01", tz = "UTC"))
+  testthat::expect_identical(failed_result$failed, "audio/live.mp3")
+  testthat::expect_length(read_podcast_retention(directory), 2L)
+})
+
+testthat::test_that("R2 deletion signs only a valid audio object key and reports remote failure", {
+  original <- Sys.getenv(c("R2_ACCOUNT_ID", "R2_BUCKET", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"), unset = NA_character_)
+  on.exit({
+    names(original) <- c("R2_ACCOUNT_ID", "R2_BUCKET", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY")
+    for (name in names(original)) if (is.na(original[[name]])) Sys.unsetenv(name) else do.call(Sys.setenv, setNames(list(original[[name]]), name))
+  }, add = TRUE)
+  Sys.setenv(R2_ACCOUNT_ID = "account", R2_BUCKET = "bucket", R2_ACCESS_KEY_ID = "key", R2_SECRET_ACCESS_KEY = "secret")
+  seen <- NULL
+  fake <- function(request) { seen <<- request; httr2::response(status_code = 204L, url = request$url, method = request$method) }
+  testthat::expect_no_error(delete_r2_audio_object("audio/old-file.mp3", perform = fake))
+  testthat::expect_identical(seen$method, "DELETE")
+  testthat::expect_match(seen$url, "/bucket/audio/old-file[.]mp3$")
+  testthat::expect_error(delete_r2_audio_object("../feed.xml", perform = fake), "invalid audio object key")
+  testthat::expect_error(delete_r2_audio_object("audio/forbidden.mp3", perform = function(request) httr2::response(status_code = 403L, url = request$url)), "retention entry remains")
+})
+
+testthat::test_that("remote cleanup reads the live Pages feed before invoking deletion", {
+  directory <- tempfile("remote-cleanup-")
+  dir.create(directory)
+  on.exit(unlink(directory, recursive = TRUE), add = TRUE)
+  config <- file.path(directory, "config")
+  state <- file.path(directory, "state")
+  save_readcast_setup_settings(list(github_pages_url = "https://reader.github.io/podcast"), config)
+  entries <- list(
+    list(url = "https://audio.example/audio/old.mp3", key = "audio/old.mp3", retired_at = "2024-01-01T00:00:00Z"),
+    list(url = "https://audio.example/audio/live.mp3", key = "audio/live.mp3", retired_at = "2024-01-01T00:00:00Z"))
+  save_podcast_retention(entries, state)
+  still_served <- list(eligible = "true", title = "Old feed copy", guid = "old", published = "", audio_url = entries[[1]]$url, audio_size = "1")
+  feed <- build_podcast_feed(list(still_served), "https://reader.github.io/podcast")
+  requests <- character()
+  fake <- function(request) {
+    requests <<- c(requests, request$url)
+    httr2::response(status_code = 200L, url = request$url, body = charToRaw(feed), headers = list(`content-type` = "application/rss+xml"))
+  }
+  deleted <- character()
+  result <- cleanup_published_podcast_audio(config, state, perform = fake,
+    delete_audio = function(key, config_dir) deleted <<- c(deleted, key), now = as.POSIXct("2024-03-01", tz = "UTC"))
+  testthat::expect_identical(deleted, "audio/live.mp3")
+  testthat::expect_identical(result$deleted, "audio/live.mp3")
+  testthat::expect_true(any(grepl("reader[.]github[.]io/podcast/feed[.]xml", requests)))
+  testthat::expect_identical(read_podcast_retention(state)[[1L]]$url, entries[[1L]]$url)
+  testthat::expect_error(cleanup_published_podcast_audio(config, state,
+    perform = function(request) httr2::response(status_code = 404L, url = request$url),
+    delete_audio = function(key, config_dir) stop("must not delete")), "refusing to delete")
+  testthat::expect_error(cleanup_published_podcast_audio(config, state,
+    perform = function(request) httr2::response(status_code = 200L, url = request$url, body = charToRaw("not RSS")),
+    delete_audio = function(key, config_dir) stop("must not delete")), "unreadable")
 })
 
 testthat::test_that("Pages publication rejects failed requests and verifies public resources", {

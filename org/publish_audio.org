@@ -82,3 +82,34 @@ upload_cached_audio <- function(mp3_path, worker_url = NULL, config_dir = path.e
   list(url = paste0(hosting$url, "/", key), key = key, size = file.info(mp3_path)$size)
 }
 #+end_src
+
+* Delete a known audio object from R2
+
+Deletion is used only by the explicit aged-audio cleanup action after it checks
+the current podcast feed. The callback fails closed on any unsuccessful R2
+response, leaving the retention entry available for a later retry.
+
+#+begin_src R
+delete_r2_audio_object <- function(object_key, config_dir = path.expand("~/.config/readcast"), perform = httr2::req_perform) {
+  if (length(object_key) != 1L || is.na(object_key) || !grepl("^audio/[A-Za-z0-9_-]+[.]mp3$", object_key)) stop("Refusing to delete an invalid audio object key.", call. = FALSE)
+  settings <- if (exists("readcast_setup_settings", mode = "function")) readcast_setup_settings(config_dir) else list(r2_account_id = "", r2_bucket = "")
+  account_id <- Sys.getenv("R2_ACCOUNT_ID", unset = settings$r2_account_id)
+  bucket <- Sys.getenv("R2_BUCKET", unset = settings$r2_bucket)
+  access_key <- Sys.getenv("R2_ACCESS_KEY_ID", unset = "")
+  secret_key <- Sys.getenv("R2_SECRET_ACCESS_KEY", unset = "")
+  missing <- c(if (!nzchar(account_id)) "R2_ACCOUNT_ID", if (!nzchar(bucket)) "R2_BUCKET",
+               if (!nzchar(access_key)) "R2_ACCESS_KEY_ID", if (!nzchar(secret_key)) "R2_SECRET_ACCESS_KEY")
+  if (length(missing)) stop("Set the missing R2 environment variable(s): ", paste(missing, collapse = ", "), ". Create an R2 API token with Object Read & Write access.", call. = FALSE)
+  endpoint <- sprintf("https://%s.r2.cloudflarestorage.com/%s/%s", account_id, utils::URLencode(bucket, reserved = TRUE), object_key)
+  response <- httr2::request(endpoint) |>
+    httr2::req_method("DELETE") |>
+    httr2::req_auth_aws_v4(access_key, secret_key, aws_service = "s3", aws_region = "auto") |>
+    httr2::req_timeout(30) |>
+    httr2::req_error(is_error = function(resp) FALSE) |>
+    perform()
+  if (httr2::resp_status(response) < 200L || httr2::resp_status(response) >= 300L) {
+    stop("R2 rejected audio deletion (HTTP ", httr2::resp_status(response), "). The retention entry remains available to retry.", call. = FALSE)
+  }
+  invisible(TRUE)
+}
+#+end_src
