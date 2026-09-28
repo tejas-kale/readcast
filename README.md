@@ -38,7 +38,7 @@ Readcast saves this non-secret setting in `~/.config/readcast/clippings-dir`. Yo
 Install the R packages used by the app:
 
 ```sh
-Rscript -e 'install.packages(c("base64enc", "callr", "commonmark", "digest", "fs", "htmltools", "httr2", "magick", "purrr", "readr", "shiny", "stringi", "stringr", "xml2", "yaml"))'
+Rscript -e 'install.packages(c("base64enc", "callr", "commonmark", "digest", "fs", "htmltools", "httr2", "jsonlite", "magick", "purrr", "readr", "shiny", "stringi", "stringr", "xml2", "yaml"))'
 ```
 
 Install `ffmpeg` separately and make your OpenRouter key available in the environment before generating narration:

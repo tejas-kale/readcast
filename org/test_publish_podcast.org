@@ -73,6 +73,24 @@ testthat::test_that("remote feed upserts one GUID and preserves other items and 
   testthat::expect_identical(podcast_episode_status(current), "complete")
 })
 
+testthat::test_that("audio retention waits 30 days and protects URLs still in the feed", {
+  directory <- tempfile("retention-")
+  dir.create(directory)
+  on.exit(unlink(directory, recursive = TRUE), add = TRUE)
+  entries <- list(
+    list(url = "https://audio.example/audio/old.mp3", key = "audio/old.mp3", retired_at = "2024-01-01T00:00:00Z"),
+    list(url = "https://audio.example/audio/live.mp3", key = "audio/live.mp3", retired_at = "2024-01-01T00:00:00Z"),
+    list(url = "https://audio.example/audio/recent.mp3", key = "audio/recent.mp3", retired_at = "2024-02-20T00:00:00Z"))
+  save_podcast_retention(entries, directory)
+  testthat::expect_error(cleanup_podcast_audio(directory, NULL, function(key) NULL), "current readable feed")
+  feed <- build_podcast_feed(list(list(eligible = "true", title = "Live", guid = "live", published = "", audio_url = entries[[2]]$url, audio_size = "1")), "https://pages.example")
+  deleted <- character()
+  result <- cleanup_podcast_audio(directory, feed, function(key) deleted <<- c(deleted, key), now = as.POSIXct("2024-03-01", tz = "UTC"))
+  testthat::expect_identical(deleted, "audio/old.mp3")
+  testthat::expect_identical(result, "audio/old.mp3")
+  testthat::expect_length(read_podcast_retention(directory), 2L)
+})
+
 testthat::test_that("Pages publication rejects failed requests and verifies public resources", {
   calls <- character()
   fake <- function(request) {
@@ -118,6 +136,8 @@ testthat::test_that("episode publication verifies audio, cover and the live RSS 
   calls <- character()
   feed_puts <- 0L
   uploads <- 0L
+  upload_keys <- character()
+  fail_upload <- TRUE
   fail_feed_put <- TRUE
   fake <- function(request) {
     calls <<- c(calls, paste(request$method %||% "GET", request$url))
@@ -138,27 +158,41 @@ testthat::test_that("episode publication verifies audio, cover and the live RSS 
     headers <- if (identical(request$url, cover_url)) list(`content-type` = "image/png") else list(`content-type` = "audio/mpeg", `content-length` = "42")
     httr2::response(url = request$url, method = request$method, headers = headers)
   }
-  uploader <- function(path, config_dir) { uploads <<- uploads + 1L; list(url = episode$audio_url, size = as.numeric(episode$audio_size)) }
+  uploader <- function(path, config_dir, object_key = NULL) {
+    uploads <<- uploads + 1L
+    upload_keys <<- c(upload_keys, object_key)
+    if (fail_upload) { fail_upload <<- FALSE; stop("simulated interrupted upload") }
+    list(url = paste0("https://audio.example/", object_key), size = as.numeric(episode$audio_size))
+  }
   unrelated_recoverable <- episode
   unrelated_recoverable$guid <- "urn:readcast:unfinished-other-episode"
   other_clipping <- file.path(directory, "other.md")
   writeLines("# Another article", other_clipping)
   save_podcast_episode(other_clipping, unrelated_recoverable, state)
   testthat::expect_error(publish_podcast_episode(clipping, mp3, cover, episode, config_dir = config, data_dir = state,
+    audio_uploader = uploader, perform = fake), "simulated interrupted upload")
+  pending_after_interruption <- read_podcast_episode(clipping, "model/voice", "Harper", state)
+  testthat::expect_true(nzchar(pending_after_interruption$replacement_key))
+  testthat::expect_error(publish_podcast_episode(clipping, mp3, cover, pending_after_interruption, config_dir = config, data_dir = state,
     audio_uploader = uploader, perform = fake), "rejected feed.xml")
   saved_after_failure <- read_podcast_episode(clipping, "model/voice", "Harper", state)
   testthat::expect_identical(podcast_episode_status(saved_after_failure), "recoverable")
-  testthat::expect_identical(saved_after_failure$audio_url, episode$audio_url)
+  testthat::expect_identical(saved_after_failure$audio_url, paste0("https://audio.example/", upload_keys[[2L]]))
+  live_feed <- build_podcast_feed(list(saved_after_failure), "https://reader.github.io/podcast", "Readcast", "Collection", "en", "false", cover_url)
   fail_feed_put <- FALSE
   result <- publish_podcast_episode(clipping, mp3, cover, saved_after_failure, config_dir = config, data_dir = state,
     audio_uploader = uploader, perform = fake)
   testthat::expect_identical(result$feed_url, "https://reader.github.io/podcast/feed.xml")
-  testthat::expect_true(any(grepl("HEAD https://audio.example/audio/hash.mp3", calls, fixed = TRUE)))
+  testthat::expect_true(any(grepl(paste0("HEAD ", saved_after_failure$audio_url), calls, fixed = TRUE)))
   testthat::expect_true(any(grepl("HEAD https://reader.github.io/podcast/cover.png", calls, fixed = TRUE)))
   testthat::expect_true(any(grepl("GET https://reader.github.io/podcast/feed.xml", calls, fixed = TRUE)))
-  testthat::expect_identical(uploads, 1L)
+  testthat::expect_identical(uploads, 2L)
+  testthat::expect_identical(upload_keys[[1L]], upload_keys[[2L]])
   testthat::expect_identical(feed_puts, 2L)
   testthat::expect_identical(read_podcast_episode(clipping, "model/voice", "Harper", state)$audio_size, "42")
   testthat::expect_identical(podcast_episode_status(read_podcast_episode(clipping, "model/voice", "Harper", state)), "complete")
+  testthat::expect_identical(read_podcast_episode(clipping, "model/voice", "Harper", state)$published, episode$published)
+  testthat::expect_length(read_podcast_retention(state), 1L)
+  testthat::expect_identical(read_podcast_retention(state)[[1L]]$url, episode$audio_url)
 })
 #+end_src

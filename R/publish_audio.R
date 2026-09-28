@@ -18,7 +18,7 @@ readcast_worker_url <- function(config_dir = path.expand("~/.config/readcast")) 
   list(url = sub("/$", "", worker_url), lock_path = lock_path)
 }
 
-upload_cached_audio <- function(mp3_path, worker_url = NULL, config_dir = path.expand("~/.config/readcast")) {
+upload_cached_audio <- function(mp3_path, worker_url = NULL, config_dir = path.expand("~/.config/readcast"), object_key = NULL) {
   if (is.null(worker_url)) hosting <- readcast_worker_url(config_dir) else {
     old <- Sys.getenv("READCAST_WORKER_URL", unset = "")
     on.exit(Sys.setenv(READCAST_WORKER_URL = old), add = TRUE)
@@ -36,7 +36,9 @@ upload_cached_audio <- function(mp3_path, worker_url = NULL, config_dir = path.e
   if (length(mp3_path) != 1L || !file.exists(mp3_path) || dir.exists(mp3_path)) stop("Select an existing cached MP3 before uploading.", call. = FALSE)
   if (file.info(mp3_path)$size <= 0) stop("The selected cached MP3 is empty.", call. = FALSE)
   digest <- digest::digest(file = mp3_path, algo = "sha256", serialize = FALSE)
-  key <- paste0("audio/", digest, ".mp3")
+  if (is.null(object_key)) object_key <- paste0("audio/", digest, ".mp3")
+  if (length(object_key) != 1L || is.na(object_key) || !grepl("^audio/[A-Za-z0-9_-]+[.]mp3$", object_key)) stop("Audio object key must be a safe audio/*.mp3 key.", call. = FALSE)
+  key <- object_key
   endpoint <- sprintf("https://%s.r2.cloudflarestorage.com/%s/%s", account_id, utils::URLencode(bucket, reserved = TRUE), key)
   result <- tryCatch({
     request <- httr2::request(endpoint) |>
