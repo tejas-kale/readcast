@@ -269,7 +269,8 @@ server <- function(input, output, session) {
     clippings = list(ok = FALSE, message = "Choose your Clippings export folder, then run this check."),
     openrouter = list(ok = FALSE, message = "Set OPENROUTER_API_KEY in your shell environment, then run this check."),
     hosting = list(ok = FALSE, message = "Set the R2 and Worker environment values, then run this check."),
-    github = list(ok = FALSE, message = "Enter your GitHub Pages site URL, then run this check.")
+    github_access = list(ok = FALSE, message = "Set GITHUB_TOKEN with repository read access, then run this check."),
+    github_pages = list(ok = FALSE, message = "Enter your GitHub Pages site URL, then run this check.")
   )
   shiny::updateSelectizeInput(session, "article", choices = clippings, selected = character(0), server = TRUE)
   shiny::updateSelectInput(session, "model", choices = models, selected = if ("microsoft/mai-voice-2-flash" %in% models) "microsoft/mai-voice-2-flash" else unname(models[[1]]))
@@ -306,7 +307,8 @@ server <- function(input, output, session) {
   output$setup_clippings_result <- shiny::renderText(setup_state$clippings$message)
   output$setup_openrouter_result <- shiny::renderText(setup_state$openrouter$message)
   output$setup_hosting_result <- shiny::renderText(setup_state$hosting$message)
-  output$setup_github_result <- shiny::renderText(setup_state$github$message)
+  output$setup_github_access_result <- shiny::renderText(setup_state$github_access$message)
+  output$setup_github_pages_result <- shiny::renderText(setup_state$github_pages$message)
 
   shiny::observeEvent(input$open_setup, {
     settings <- readcast_setup_settings()
@@ -322,6 +324,7 @@ server <- function(input, output, session) {
           shiny::tags$li("For public episode hosting, create a dedicated public GitHub repository for the Pages site, enable Pages from its main branch, and use the resulting https://<account>.github.io/<repository>/ URL. Keep this separate from private code."),
           shiny::tags$li("In Cloudflare, create the private R2 bucket readcast-audio in Standard storage. Create an R2 token with Object Read & Write access, then deploy the bundled Worker with npx wrangler deploy from the worker directory and bind AUDIO_BUCKET to that bucket."),
           shiny::tags$li("Set R2_ACCOUNT_ID, R2_BUCKET, READCAST_WORKER_URL, R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY in your shell or secret manager. The Worker URL must be its permanent https://<worker>.<account>.workers.dev origin. Keep that URL unchanged after publishing."),
+          shiny::tags$li("Set GITHUB_TOKEN with read access to the dedicated Pages repository. Readcast uses it only to check repository access; it is never shown or saved."),
           shiny::tags$li("Save non-secret site and storage values below. Secret values are read only from the environment; none are shown or written to Readcast configuration.")),
         shiny::p("Provisioning is a one-time manual step. Readcast does not create repositories, buckets, tokens or Workers.")),
       shiny::textInput("setup_clippings", "Clippings directory", value = settings$clippings_dir, placeholder = "~/Documents/Clippings"),
@@ -332,7 +335,8 @@ server <- function(input, output, session) {
       shiny::textInput("setup_worker_url", "Worker URL", value = setup_url_for_display(settings$worker_url), placeholder = "https://readcast.<account>.workers.dev"),
       shiny::div(class = "setup-check", shiny::tags$h4("R2 and Worker"), shiny::p("Readcast checks bucket listing permission and sends a HEAD request for a deliberately missing object. Access keys are read from the environment and never displayed."), shiny::actionButton("check_setup_hosting", "Check R2 and Worker"), shiny::tags$p(class = "setup-result", shiny::textOutput("setup_hosting_result"))),
       shiny::textInput("setup_github_url", "GitHub Pages site URL", value = setup_url_for_display(settings$github_pages_url), placeholder = "https://<account>.github.io/<repository>/"),
-      shiny::div(class = "setup-check", shiny::tags$h4("GitHub Pages"), shiny::actionButton("check_setup_github", "Check GitHub Pages"), shiny::tags$p(class = "setup-result", shiny::textOutput("setup_github_result"))),
+      shiny::div(class = "setup-check", shiny::tags$h4("GitHub repository access"), shiny::p("Checks GITHUB_TOKEN against the repository API using a read-only request."), shiny::actionButton("check_setup_github_access", "Check GitHub repository access"), shiny::tags$p(class = "setup-result", shiny::textOutput("setup_github_access_result"))),
+      shiny::div(class = "setup-check", shiny::tags$h4("GitHub Pages site"), shiny::p("Checks the public site URL independently of the repository token."), shiny::actionButton("check_setup_github_pages", "Check GitHub Pages site"), shiny::tags$p(class = "setup-result", shiny::textOutput("setup_github_pages_result"))),
       footer = shiny::tagList(shiny::actionButton("save_setup", "Save settings", class = "btn-primary"), shiny::modalButton("Close")))
     )
   })
@@ -371,8 +375,11 @@ server <- function(input, output, session) {
       Sys.getenv("R2_ACCESS_KEY_ID", unset = ""), Sys.getenv("R2_SECRET_ACCESS_KEY", unset = ""), input$setup_worker_url
     ))
   })
-  shiny::observeEvent(input$check_setup_github, {
-    setup_state$github <- setup_check_result(function() check_readcast_github_pages(input$setup_github_url))
+  shiny::observeEvent(input$check_setup_github_access, {
+    setup_state$github_access <- setup_check_result(function() check_readcast_github_access(input$setup_github_url))
+  })
+  shiny::observeEvent(input$check_setup_github_pages, {
+    setup_state$github_pages <- setup_check_result(function() check_readcast_github_pages(input$setup_github_url))
   })
   output$cover_candidate <- shiny::renderUI({
     cover_state$refresh

@@ -2,6 +2,8 @@ source(testthat::test_path("..", "..", "R", "setup.R"), local = TRUE)
 
 testthat::test_that("personal setup persists only allowed non-secret settings", {
   config <- tempfile("readcast-config-")
+  dir.create(config)
+  writeLines("/old/from-cli", file.path(config, "clippings-dir"))
   settings <- list(clippings_dir = "/tmp/clippings", github_pages_url = "https://reader.github.io/podcast/",
                    r2_account_id = "account-id", r2_bucket = "readcast-audio", worker_url = "https://audio.account.workers.dev")
   save_readcast_setup_settings(settings, config)
@@ -37,4 +39,25 @@ testthat::test_that("connection check URLs are restricted to expected public ori
   testthat::expect_error(check_readcast_github_pages("https://example.com"), "ending in github.io")
   testthat::expect_error(check_readcast_github_pages("https://reader.github.io/?token=secret"), "without credentials")
   testthat::expect_error(check_readcast_hosting("account", "bucket", "key", "secret", "http://audio.account.workers.dev"), "HTTPS workers.dev")
+})
+
+testthat::test_that("GitHub repository access requires a token and checks the Pages repository read-only", {
+  testthat::expect_error(check_readcast_github_access("https://reader.github.io/podcast/", token = ""), "Set GITHUB_TOKEN")
+  testthat::expect_identical(github_repository_from_pages_url("https://reader.github.io/podcast/"), list(owner = "reader", repository = "podcast"))
+  testthat::expect_identical(github_repository_from_pages_url("https://reader.github.io/"), list(owner = "reader", repository = "reader.github.io"))
+  request_seen <- NULL
+  perform <- function(request) {
+    request_seen <<- request
+    httr2::response(status_code = 200, url = request$url)
+  }
+  result <- check_readcast_github_access("https://reader.github.io/podcast/", token = "test-token", perform = perform)
+  testthat::expect_true(result$ok)
+  testthat::expect_identical(request_seen$url, "https://api.github.com/repos/reader/podcast")
+  testthat::expect_true("Authorization" %in% names(request_seen$headers))
+  denied <- setup_check_result(function() check_readcast_github_access(
+    "https://reader.github.io/podcast/", token = "test-token",
+    perform = function(request) httr2::response(status_code = 401, url = request$url)
+  ))
+  testthat::expect_false(denied$ok)
+  testthat::expect_match(denied$message, "GitHub rejected GITHUB_TOKEN")
 })
