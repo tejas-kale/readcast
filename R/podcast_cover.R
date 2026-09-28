@@ -23,7 +23,7 @@ generate_cover_candidate <- function(prompt, destination, key = Sys.getenv("OPEN
   response <- httr2::request("https://openrouter.ai/api/v1/images") |>
     httr2::req_headers(Authorization = paste("Bearer", key)) |>
     httr2::req_body_json(list(model = "openai/gpt-image-2", prompt = prompt,
-                              aspect_ratio = "1:1", size = "3000x3000",
+                              aspect_ratio = "1:1", size = "1920x1920",
                               output_format = "png", background = "opaque")) |>
     httr2::req_timeout(180) |>
     httr2::req_error(is_error = function(response) FALSE) |>
