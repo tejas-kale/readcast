@@ -6,6 +6,7 @@ if (!nzchar(module_dir)) {
 module_dir <- normalizePath(module_dir, mustWork = TRUE)
 source(file.path(module_dir, "R", "narrate_article.R"), local = TRUE)
 source(file.path(module_dir, "R", "podcast_cover.R"), local = TRUE)
+source(file.path(module_dir, "R", "publish_audio.R"), local = TRUE)
 config_file <- path.expand("~/.config/readcast/clippings-dir")
 configured_clippings_dir <- if (file.exists(config_file)) trimws(readLines(config_file, warn = FALSE, n = 1L)) else ""
 clippings_setting <- Sys.getenv("CLIPPINGS_DIR", unset = configured_clippings_dir)
@@ -241,6 +242,8 @@ ui <- shiny::fluidPage(
       shiny::actionButton("approve_cover", "Approve this cover", class = "generate-button"),
       shiny::tags$div(class = "status", shiny::textOutput("cover_status")),
       shiny::actionButton("generate", "Generate audio", class = "generate-button"),
+      shiny::actionButton("publish_audio", "Upload cached audio to R2", class = "generate-button"),
+      shiny::tags$div(class = "status", shiny::textOutput("publish_status")),
       shiny::tags$div(class = "status", shiny::textOutput("status")),
       shiny::tags$p(class = "help-text keyboard-help",
         shiny::tags$kbd("/"), "/", shiny::tags$kbd("a"), " find article · ", shiny::tags$kbd("m"), " model · ", shiny::tags$kbd("v"), " voice", shiny::tags$br(),
@@ -258,6 +261,7 @@ server <- function(input, output, session) {
   models <- discover_tts_models()
   state <- shiny::reactiveValues(job = NULL, status = "Choose an article to begin.", refresh = 0L)
   cover_state <- shiny::reactiveValues(status = "Edit the prompt, then generate a cover candidate.", refresh = 0L)
+  publish_state <- shiny::reactiveValues(status = "Publishing is optional; configure R2 to host an episode.")
   shiny::updateSelectizeInput(session, "article", choices = clippings, selected = character(0), server = TRUE)
   shiny::updateSelectInput(session, "model", choices = models, selected = if ("microsoft/mai-voice-2-flash" %in% models) "microsoft/mai-voice-2-flash" else unname(models[[1]]))
 
@@ -287,6 +291,7 @@ server <- function(input, output, session) {
   })
   output$status <- shiny::renderText(state$status)
   output$cover_status <- shiny::renderText(cover_state$status)
+  output$publish_status <- shiny::renderText(publish_state$status)
   output$cover_candidate <- shiny::renderUI({
     cover_state$refresh
     if (!file.exists(cover_files$candidate)) return(NULL)
@@ -323,6 +328,27 @@ server <- function(input, output, session) {
   current_cache <- shiny::reactive({
     shiny::req(input$article, input$model)
     cache_path(selected_path(), input$model, stringr::str_trim(input$voice %||% ""), module_dir, cache_dir)
+  })
+
+  shiny::observeEvent(input$publish_audio, {
+    path <- tryCatch(current_cache(), error = function(error) {
+      publish_state$status <- conditionMessage(error)
+      NULL
+    })
+    if (is.null(path)) return()
+    if (!file.exists(path) || file.info(path)$size <= 0L) {
+      publish_state$status <- "Generate or select an existing cached narration before uploading it."
+      shiny::showNotification(publish_state$status, type = "message")
+      return()
+    }
+    tryCatch({
+      uploaded <- upload_cached_audio(path)
+      publish_state$status <- paste("Hosted audio:", uploaded$url)
+      shiny::showNotification("Cached audio uploaded to R2.", type = "message")
+    }, error = function(error) {
+      publish_state$status <- conditionMessage(error)
+      shiny::showNotification(publish_state$status, type = "error", duration = NULL)
+    })
   })
 
   output$player <- shiny::renderUI({

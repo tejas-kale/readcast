@@ -48,7 +48,7 @@ export OPENROUTER_API_KEY="your-key"
 readcast
 ```
 
-Credentials such as `OPENROUTER_API_KEY` belong in environment variables (or a local shell secret manager), never in the repository or Readcast's personal configuration. `NARRATION_CACHE_DIR` can override the default MP3 cache directory (`~/.cache/readcast/narrations`). The app currently uses local files only; podcast publishing is being designed.
+Credentials such as `OPENROUTER_API_KEY` belong in environment variables (or a local shell secret manager), never in the repository or Readcast's personal configuration. `NARRATION_CACHE_DIR` can override the default MP3 cache directory (`~/.cache/readcast/narrations`). To host an already-cached narration, deploy the private-bucket Worker in [worker/README.md](worker/README.md), then set `READCAST_WORKER_URL`, `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY` in the environment before launching Readcast. The app's **Upload cached audio to R2** action publishes only the currently selected cache file; the Worker origin is saved after a successful upload and must remain unchanged.
 
 The Podcast cover controls let you edit a starting prompt, generate and inspect a candidate with OpenRouter's `openai/gpt-image-2`, then explicitly approve it. Candidates and approved artwork are saved separately under `~/.local/share/readcast/covers`; `READCAST_DATA_DIR` can override the parent directory. Generation requires `OPENROUTER_API_KEY`. The approved PNG is checked for a square 1400–3000 px size and an opaque background.
 

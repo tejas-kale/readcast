@@ -1,0 +1,9 @@
+{
+  "name": "readcast-audio",
+  "main": "audio.js",
+  "compatibility_date": "2026-09-28",
+  "workers_dev": true,
+  "r2_buckets": [
+    { "binding": "AUDIO_BUCKET", "bucket_name": "readcast-audio" }
+  ]
+}
