@@ -1,0 +1,126 @@
+#+TITLE: Readcast setup and connection checks
+#+PROPERTY: header-args:R :tangle ../R/setup.R :comments no :session none
+
+This module stores only non-secret personal settings and runs checks that do not
+publish audio or create cloud resources. Credentials are read from the process
+environment and are never copied into this file.
+
+* Read and save personal settings
+
+#+begin_src R
+readcast_setup_settings <- function(config_dir = path.expand("~/.config/readcast")) {
+  settings_path <- file.path(config_dir, "settings")
+  stored <- if (file.exists(settings_path)) tryCatch(read.dcf(settings_path), error = function(error) matrix(character(), nrow = 0L)) else matrix(character(), nrow = 0L)
+  stored_value <- function(name, fallback = "") {
+    if (nrow(stored) && name %in% colnames(stored)) unname(stored[1L, name]) else fallback
+  }
+  clipping_file <- file.path(config_dir, "clippings-dir")
+  list(
+    clippings_dir = Sys.getenv("CLIPPINGS_DIR", unset = if (file.exists(clipping_file)) trimws(readLines(clipping_file, warn = FALSE, n = 1L)) else stored_value("clippings_dir")),
+    github_pages_url = Sys.getenv("READCAST_PAGES_URL", unset = stored_value("github_pages_url")),
+    r2_account_id = Sys.getenv("R2_ACCOUNT_ID", unset = stored_value("r2_account_id")),
+    r2_bucket = Sys.getenv("R2_BUCKET", unset = stored_value("r2_bucket")),
+    worker_url = Sys.getenv("READCAST_WORKER_URL", unset = stored_value("worker_url"))
+  )
+}
+
+setup_url_for_display <- function(value) {
+  value <- trimws(value %||% "")
+  if (!nzchar(value)) return("")
+  parsed <- tryCatch(httr2::url_parse(value), error = function(error) NULL)
+  if (is.null(parsed) || nzchar(parsed$username %||% "") || nzchar(parsed$password %||% "") || length(parsed$query) || nzchar(parsed$fragment %||% "")) "" else value
+}
+
+save_readcast_setup_settings <- function(settings, config_dir = path.expand("~/.config/readcast")) {
+  allowed <- c("clippings_dir", "github_pages_url", "r2_account_id", "r2_bucket", "worker_url")
+  if (any(!names(settings) %in% allowed)) stop("Only non-secret Readcast settings can be saved.", call. = FALSE)
+  if (!dir.create(config_dir, recursive = TRUE, showWarnings = FALSE) && !dir.exists(config_dir)) stop("Cannot create Readcast configuration directory.", call. = FALSE)
+  settings <- as.list(settings[allowed[allowed %in% names(settings)]])
+  values <- lapply(settings, function(value) trimws(as.character(value %||% "")))
+  for (name in c("github_pages_url", "worker_url")) {
+    value <- values[[name]] %||% ""
+    if (nzchar(value)) {
+      parsed <- httr2::url_parse(value)
+      if (nzchar(parsed$username %||% "") || nzchar(parsed$password %||% "") || length(parsed$query) || nzchar(parsed$fragment %||% "")) {
+        stop("Do not include credentials, query parameters or fragments in saved setup URLs.", call. = FALSE)
+      }
+    }
+  }
+  if (length(values)) write.dcf(as.data.frame(values, stringsAsFactors = FALSE), file.path(config_dir, "settings"))
+  invisible(settings)
+}
+
+`%||%` <- function(value, fallback) if (is.null(value) || length(value) == 0L) fallback else value
+#+end_src
+
+* Independent, non-mutating checks
+
+#+begin_src R
+setup_check_result <- function(check) {
+  tryCatch(check(), error = function(error) list(ok = FALSE, message = conditionMessage(error)))
+}
+
+check_readcast_clippings <- function(directory) {
+  directory <- path.expand(trimws(directory %||% ""))
+  if (!nzchar(directory) || !dir.exists(directory)) stop("Choose an existing Clippings directory.", call. = FALSE)
+  count <- length(list.files(directory, pattern = "\\.md$", recursive = TRUE, ignore.case = TRUE))
+  if (!count) stop("The folder is reachable, but contains no Markdown clippings yet. Check the exported Clippings folder.", call. = FALSE)
+  list(ok = TRUE, message = sprintf("Connected: found %s Markdown clipping%s.", count, if (count == 1L) "" else "s"))
+}
+
+check_readcast_openrouter <- function(api_key = Sys.getenv("OPENROUTER_API_KEY", unset = ""), perform = httr2::req_perform) {
+  if (!nzchar(trimws(api_key))) stop("Set OPENROUTER_API_KEY in your shell environment, then relaunch Readcast.", call. = FALSE)
+  response <- httr2::request("https://openrouter.ai/api/v1/models") |>
+    httr2::req_headers(Authorization = paste("Bearer", api_key)) |>
+    httr2::req_timeout(15) |>
+    httr2::req_error(is_error = function(response) FALSE) |>
+    perform()
+  status <- httr2::resp_status(response)
+  if (status < 200L || status >= 300L) stop(if (status == 401L || status == 403L) "OpenRouter rejected the key. Check that it is valid and enabled." else paste("OpenRouter returned HTTP", status, "while checking the connection."), call. = FALSE)
+  list(ok = TRUE, message = "Connected to OpenRouter. No narration was generated.")
+}
+
+check_readcast_hosting <- function(account_id, bucket, access_key, secret_key, worker_url, perform = httr2::req_perform) {
+  missing <- c(if (!nzchar(trimws(account_id))) "R2_ACCOUNT_ID", if (!nzchar(trimws(bucket))) "R2_BUCKET",
+               if (!nzchar(trimws(access_key))) "R2_ACCESS_KEY_ID", if (!nzchar(trimws(secret_key))) "R2_SECRET_ACCESS_KEY",
+               if (!nzchar(trimws(worker_url))) "READCAST_WORKER_URL")
+  if (length(missing)) stop(paste0("Set ", paste(missing, collapse = ", "), " in your shell environment, then relaunch Readcast."), call. = FALSE)
+  parsed <- httr2::url_parse(worker_url)
+  if (!identical(parsed$scheme, "https") || !grepl("^[a-z0-9-]+\\.[a-z0-9-]+\\.workers\\.dev$", parsed$hostname)) stop("READCAST_WORKER_URL must be the permanent HTTPS workers.dev origin, without a path.", call. = FALSE)
+  if (nzchar(parsed$username %||% "") || nzchar(parsed$password %||% "") || length(parsed$query) || nzchar(parsed$fragment %||% "") || (nzchar(parsed$path %||% "") && parsed$path != "/")) stop("READCAST_WORKER_URL must not include credentials, query parameters, fragments or a path.", call. = FALSE)
+  endpoint <- sprintf("https://%s.r2.cloudflarestorage.com/%s", account_id, utils::URLencode(bucket, reserved = TRUE))
+  r2 <- httr2::request(endpoint) |>
+    httr2::req_url_query(`list-type` = "2", `max-keys` = "1") |>
+    httr2::req_auth_aws_v4(access_key, secret_key, aws_service = "s3", aws_region = "auto") |>
+    httr2::req_timeout(15) |>
+    httr2::req_error(is_error = function(response) FALSE) |>
+    perform()
+  r2_status <- httr2::resp_status(r2)
+  if (r2_status < 200L || r2_status >= 300L) stop(paste("R2 could not list this bucket (HTTP", r2_status, "). Check the account, bucket and token's object read permission."), call. = FALSE)
+  probe <- paste0(sub("/$", "", worker_url), "/audio/readcast-setup-probe-does-not-exist.mp3")
+  worker <- httr2::request(probe) |>
+    httr2::req_method("HEAD") |>
+    httr2::req_timeout(15) |>
+    httr2::req_error(is_error = function(response) FALSE) |>
+    perform()
+  worker_status <- httr2::resp_status(worker)
+  if (worker_status != 404L) stop(if (worker_status == 503L) "The Worker is reachable, but it could not read its R2 bucket. Check the AUDIO_BUCKET binding and deploy the Worker." else paste("The Worker probe returned HTTP", worker_status, ". Check the workers.dev URL and deploy the audio Worker."), call. = FALSE)
+  list(ok = TRUE, message = "Connected to the R2 bucket and Worker. No objects were changed.")
+}
+
+check_readcast_github_pages <- function(url, perform = httr2::req_perform) {
+  url <- trimws(url %||% "")
+  if (!nzchar(url)) stop("Enter the HTTPS URL of your dedicated public GitHub Pages repository.", call. = FALSE)
+  parsed <- httr2::url_parse(url)
+  if (!identical(parsed$scheme, "https")) stop("Use HTTPS for the GitHub Pages site URL.", call. = FALSE)
+  if (!grepl("(^|\\.)github\\.io$", parsed$hostname)) stop("Use the HTTPS URL ending in github.io for the dedicated public Pages repository.", call. = FALSE)
+  if (nzchar(parsed$username %||% "") || nzchar(parsed$password %||% "") || length(parsed$query) || nzchar(parsed$fragment %||% "")) stop("Use the public GitHub Pages URL without credentials, query parameters or fragments.", call. = FALSE)
+  response <- httr2::request(url) |>
+    httr2::req_timeout(15) |>
+    httr2::req_error(is_error = function(response) FALSE) |>
+    perform()
+  status <- httr2::resp_status(response)
+  if (status < 200L || status >= 300L) stop(paste("GitHub Pages returned HTTP", status, ". Enable Pages for the public repository and check the site URL."), call. = FALSE)
+  list(ok = TRUE, message = "GitHub Pages site is reachable. No content was published.")
+}
+#+end_src

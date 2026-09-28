@@ -10,7 +10,8 @@ and the access key and secret key remain credentials in the environment.
 
 #+begin_src R
 readcast_worker_url <- function(config_dir = path.expand("~/.config/readcast")) {
-  worker_url <- trimws(Sys.getenv("READCAST_WORKER_URL", unset = ""))
+  settings <- if (exists("readcast_setup_settings", mode = "function")) readcast_setup_settings(config_dir) else list(worker_url = "")
+  worker_url <- trimws(Sys.getenv("READCAST_WORKER_URL", unset = settings$worker_url))
   if (!nzchar(worker_url)) stop("Set READCAST_WORKER_URL to the permanent https://<worker>.<account>.workers.dev address.", call. = FALSE)
   parsed <- httr2::url_parse(worker_url)
   if (!identical(parsed$scheme, "https") || !grepl("^[a-z0-9-]+\\.[a-z0-9-]+\\.workers\\.dev$", parsed$hostname)) {
@@ -43,8 +44,9 @@ upload_cached_audio <- function(mp3_path, worker_url = NULL, config_dir = path.e
     Sys.setenv(READCAST_WORKER_URL = worker_url)
     hosting <- readcast_worker_url(config_dir)
   }
-  account_id <- Sys.getenv("R2_ACCOUNT_ID", unset = "")
-  bucket <- Sys.getenv("R2_BUCKET", unset = "")
+  settings <- if (exists("readcast_setup_settings", mode = "function")) readcast_setup_settings(config_dir) else list(r2_account_id = "", r2_bucket = "")
+  account_id <- Sys.getenv("R2_ACCOUNT_ID", unset = settings$r2_account_id)
+  bucket <- Sys.getenv("R2_BUCKET", unset = settings$r2_bucket)
   access_key <- Sys.getenv("R2_ACCESS_KEY_ID", unset = "")
   secret_key <- Sys.getenv("R2_SECRET_ACCESS_KEY", unset = "")
   missing <- c(if (!nzchar(account_id)) "R2_ACCOUNT_ID", if (!nzchar(bucket)) "R2_BUCKET",
