@@ -16,6 +16,7 @@ if (!nzchar(module_dir)) {
 }
 module_dir <- normalizePath(module_dir, mustWork = TRUE)
 source(file.path(module_dir, "R", "narrate_article.R"), local = TRUE)
+source(file.path(module_dir, "R", "podcast_cover.R"), local = TRUE)
 config_file <- path.expand("~/.config/readcast/clippings-dir")
 configured_clippings_dir <- if (file.exists(config_file)) trimws(readLines(config_file, warn = FALSE, n = 1L)) else ""
 clippings_setting <- Sys.getenv("CLIPPINGS_DIR", unset = configured_clippings_dir)
@@ -26,8 +27,14 @@ clippings_dir <- normalizePath(clippings_dir, mustWork = TRUE)
 cache_dir <- path.expand(Sys.getenv("NARRATION_CACHE_DIR", "~/.cache/readcast/narrations"))
 dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
 if (!dir.exists(cache_dir)) stop("Cannot create narration cache: ", cache_dir)
+cover_data_dir <- path.expand(Sys.getenv("READCAST_DATA_DIR", "~/.local/share/readcast"))
+cover_files <- cover_paths(cover_data_dir)
+cover_artwork_dir <- dirname(cover_files$candidate)
+dir.create(cover_artwork_dir, recursive = TRUE, showWarnings = FALSE)
+if (!dir.exists(cover_artwork_dir)) stop("Cannot create Readcast cover directory: ", cover_artwork_dir)
 shiny::addResourcePath("clipping-assets", clippings_dir)
 shiny::addResourcePath("narration-cache", cache_dir)
+shiny::addResourcePath("cover-artwork", cover_artwork_dir)
 #+end_src
 
 #+begin_src R :tangle ../app.R
@@ -266,6 +273,12 @@ ui <- shiny::fluidPage(
       shiny::selectInput("model", "OpenRouter model", choices = NULL),
       shiny::textInput("voice", "Voice", value = ""),
       shiny::tags$p(class = "help-text", "Voices depend on the model. A default is filled in when known; otherwise enter a voice from the model’s page."),
+      shiny::tags$div(class = "eyebrow", "Podcast cover"),
+      shiny::textAreaInput("cover_prompt", "Starting prompt", value = default_cover_prompt(), rows = 4),
+      shiny::actionButton("generate_cover", "Generate cover candidate", class = "generate-button"),
+      shiny::uiOutput("cover_candidate"),
+      shiny::actionButton("approve_cover", "Approve this cover", class = "generate-button"),
+      shiny::tags$div(class = "status", shiny::textOutput("cover_status")),
       shiny::actionButton("generate", "Generate audio", class = "generate-button"),
       shiny::tags$div(class = "status", shiny::textOutput("status")),
       shiny::tags$p(class = "help-text keyboard-help",
@@ -287,6 +300,7 @@ server <- function(input, output, session) {
   clippings <- list_clippings(clippings_dir)
   models <- discover_tts_models()
   state <- shiny::reactiveValues(job = NULL, status = "Choose an article to begin.", refresh = 0L)
+  cover_state <- shiny::reactiveValues(status = "Edit the prompt, then generate a cover candidate.", refresh = 0L)
   shiny::updateSelectizeInput(session, "article", choices = clippings, selected = character(0), server = TRUE)
   shiny::updateSelectInput(session, "model", choices = models, selected = if ("microsoft/mai-voice-2-flash" %in% models) "microsoft/mai-voice-2-flash" else unname(models[[1]]))
 
@@ -315,6 +329,39 @@ server <- function(input, output, session) {
     shiny::tags$div(class = "article-body", preview_html(article()$body, selected_path(), clippings_dir))
   })
   output$status <- shiny::renderText(state$status)
+  output$cover_status <- shiny::renderText(cover_state$status)
+  output$cover_candidate <- shiny::renderUI({
+    cover_state$refresh
+    if (!file.exists(cover_files$candidate)) return(NULL)
+    shiny::tags$div(class = "cover-candidate",
+      shiny::tags$img(src = "/cover-artwork/show-cover-candidate.png", alt = "Podcast cover candidate", style = "width:100%;max-width:300px;height:auto"))
+  })
+
+  shiny::observeEvent(input$generate_cover, {
+    tryCatch({
+      generate_cover_candidate(input$cover_prompt, cover_files$candidate)
+      cover_state$status <- "Candidate ready. Inspect it above, then approve it or edit the prompt and regenerate."
+      cover_state$refresh <- cover_state$refresh + 1L
+    }, error = function(error) {
+      cover_state$status <- conditionMessage(error)
+      shiny::showNotification(cover_state$status, type = "error", duration = NULL)
+    })
+  })
+
+  shiny::observeEvent(input$approve_cover, {
+    if (!file.exists(cover_files$candidate)) {
+      cover_state$status <- "Generate a cover candidate before approving one."
+      shiny::showNotification(cover_state$status, type = "message")
+      return()
+    }
+    tryCatch({
+      approve_cover_candidate(cover_files$candidate, cover_files$approved)
+      cover_state$status <- "Approved cover saved to your Readcast data directory."
+    }, error = function(error) {
+      cover_state$status <- conditionMessage(error)
+      shiny::showNotification(cover_state$status, type = "error", duration = NULL)
+    })
+  })
 
   current_cache <- shiny::reactive({
     shiny::req(input$article, input$model)

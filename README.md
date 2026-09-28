@@ -38,7 +38,7 @@ Readcast saves this non-secret setting in `~/.config/readcast/clippings-dir`. Yo
 Install the R packages used by the app:
 
 ```sh
-Rscript -e 'install.packages(c("callr", "commonmark", "digest", "fs", "htmltools", "httr2", "purrr", "readr", "shiny", "stringi", "stringr", "xml2", "yaml"))'
+Rscript -e 'install.packages(c("base64enc", "callr", "commonmark", "digest", "fs", "htmltools", "httr2", "magick", "purrr", "readr", "shiny", "stringi", "stringr", "xml2", "yaml"))'
 ```
 
 Install `ffmpeg` separately and make your OpenRouter key available in the environment before generating narration:
@@ -49,6 +49,8 @@ readcast
 ```
 
 Credentials such as `OPENROUTER_API_KEY` belong in environment variables (or a local shell secret manager), never in the repository or Readcast's personal configuration. `NARRATION_CACHE_DIR` can override the default MP3 cache directory (`~/.cache/readcast/narrations`). The app currently uses local files only; podcast publishing is being designed.
+
+The Podcast cover controls let you edit a starting prompt, generate and inspect a candidate with OpenRouter's `openai/gpt-image-2`, then explicitly approve it. Candidates and approved artwork are saved separately under `~/.local/share/readcast/covers`; `READCAST_DATA_DIR` can override the parent directory. Generation requires `OPENROUTER_API_KEY`. The approved PNG is checked for a square 1400–3000 px size and an opaque background.
 
 When changing the app, edit the org files and regenerate their single R targets from the project root:
 

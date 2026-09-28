@@ -1,0 +1,44 @@
+#+TITLE: Podcast cover tests
+#+PROPERTY: header-args:R :tangle ../tests/testthat/test-podcast_cover.R :comments no :session none
+
+* Cover validation and explicit approval
+
+#+begin_src R :tangle ../tests/testthat/test-podcast_cover.R
+source(testthat::test_path("..", "..", "R", "podcast_cover.R"), local = TRUE)
+
+testthat::test_that("missing OpenRouter credentials give an actionable message", {
+  testthat::expect_error(cover_api_key("  "), "Set OPENROUTER_API_KEY")
+})
+
+testthat::test_that("cover candidates must be square, large enough, and opaque", {
+  directory <- tempfile("cover-tests-")
+  dir.create(directory)
+  on.exit(unlink(directory, recursive = TRUE), add = TRUE)
+  square <- file.path(directory, "square.png")
+  magick::image_blank(1400, 1400, "white") |> magick::image_write(path = square, format = "png")
+  testthat::expect_no_error(validate_cover_image(square))
+  small <- file.path(directory, "small.png")
+  magick::image_blank(1000, 1000, "white") |> magick::image_write(path = small, format = "png")
+  testthat::expect_error(validate_cover_image(small), "between 1400 and 3000")
+  rectangle <- file.path(directory, "rectangle.png")
+  magick::image_blank(1400, 1500, "white") |> magick::image_write(path = rectangle, format = "png")
+  testthat::expect_error(validate_cover_image(rectangle), "must be square")
+  transparent <- file.path(directory, "transparent.png")
+  magick::image_blank(1400, 1400, "none") |> magick::image_write(path = transparent, format = "png")
+  testthat::expect_error(validate_cover_image(transparent), "opaque background")
+})
+
+testthat::test_that("approval copies a valid candidate to a distinct persistent path", {
+  directory <- tempfile("cover-tests-")
+  dir.create(directory)
+  on.exit(unlink(directory, recursive = TRUE), add = TRUE)
+  paths <- cover_paths(directory)
+  dir.create(dirname(paths$candidate), recursive = TRUE, showWarnings = FALSE)
+  magick::image_blank(1400, 1400, "white") |> magick::image_write(path = paths$candidate, format = "png")
+  approve_cover_candidate(paths$candidate, paths$approved)
+  testthat::expect_true(file.exists(paths$candidate))
+  testthat::expect_true(file.exists(paths$approved))
+  testthat::expect_false(identical(normalizePath(paths$candidate), normalizePath(paths$approved)))
+  testthat::expect_identical(unname(tools::md5sum(paths$candidate)), unname(tools::md5sum(paths$approved)))
+})
+#+end_src
