@@ -15,7 +15,25 @@ Edit the org files, then regenerate the R files from the project root:
 emacs -Q --batch --eval '(progn (require (quote org)) (mapc (lambda (file) (org-babel-tangle-file file)) (directory-files "org" t "[.]org$")))'
 ```
 
-## Run locally
+## Install and run
+
+Install Readcast from a checkout with:
+
+```sh
+./install.sh
+```
+
+This copies the app to `~/.local/share/readcast` and installs the `readcast` command in `~/.local/bin`. Add that directory to `PATH` if your shell does not already include it. From a checkout, `./bin/readcast` runs the same command directly. Both commands work from any current directory.
+
+Configure the folder containing your Markdown clippings once:
+
+```sh
+readcast configure ~/Documents/Clippings
+```
+
+Readcast saves this non-secret setting in `~/.config/readcast/clippings-dir`. You can instead set `CLIPPINGS_DIR` in the environment to override it. The app reports an actionable error when the configured directory is missing or invalid.
+
+## Dependencies and credentials
 
 Install the R packages used by the app:
 
@@ -23,10 +41,17 @@ Install the R packages used by the app:
 Rscript -e 'install.packages(c("callr", "commonmark", "digest", "fs", "htmltools", "httr2", "purrr", "readr", "shiny", "stringi", "stringr", "xml2", "yaml"))'
 ```
 
-Install `ffmpeg` separately, set `OPENROUTER_API_KEY` and `CLIPPINGS_DIR`, then launch from the project root:
+Install `ffmpeg` separately and make your OpenRouter key available in the environment before generating narration:
 
 ```sh
-Rscript app.R
+export OPENROUTER_API_KEY="your-key"
+readcast
 ```
 
-`NARRATION_CACHE_DIR` can override the default MP3 cache directory. The app currently uses local files only; podcast publishing is being designed.
+Credentials such as `OPENROUTER_API_KEY` belong in environment variables (or a local shell secret manager), never in the repository or Readcast's personal configuration. `NARRATION_CACHE_DIR` can override the default MP3 cache directory (`~/.cache/readcast/narrations`). The app currently uses local files only; podcast publishing is being designed.
+
+When changing the app, edit the org files and regenerate their single R targets from the project root:
+
+```sh
+emacs -Q --batch --eval '(progn (require (quote org)) (mapc (lambda (file) (org-babel-tangle-file file)) (directory-files "org" t "[.]org$")))'
+```

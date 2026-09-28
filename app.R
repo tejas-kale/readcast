@@ -1,7 +1,18 @@
-module_dir <- normalizePath(getwd(), mustWork = TRUE)
+module_dir <- Sys.getenv("READCAST_HOME", unset = "")
+if (!nzchar(module_dir)) {
+  script_argument <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
+  module_dir <- if (length(script_argument)) dirname(normalizePath(sub("^--file=", "", script_argument[[1]]), mustWork = TRUE)) else getwd()
+}
+module_dir <- normalizePath(module_dir, mustWork = TRUE)
 source(file.path(module_dir, "R", "narrate_article.R"), local = TRUE)
-clippings_dir <- normalizePath(path.expand(Sys.getenv("CLIPPINGS_DIR", "~/Documents/Cowork Root/00_Resources/Clippings")), mustWork = TRUE)
-cache_dir <- path.expand(Sys.getenv("NARRATION_CACHE_DIR", "~/Documents/Cowork Root/00_Resources/Narrations"))
+config_file <- path.expand("~/.config/readcast/clippings-dir")
+configured_clippings_dir <- if (file.exists(config_file)) trimws(readLines(config_file, warn = FALSE, n = 1L)) else ""
+clippings_setting <- Sys.getenv("CLIPPINGS_DIR", unset = configured_clippings_dir)
+if (!nzchar(clippings_setting)) stop("Readcast has no Clippings directory configured. Run `readcast configure /path/to/Clippings`.")
+clippings_dir <- path.expand(clippings_setting)
+if (!dir.exists(clippings_dir)) stop("Clippings directory does not exist: ", clippings_dir, ". Run `readcast configure /path/to/Clippings`.")
+clippings_dir <- normalizePath(clippings_dir, mustWork = TRUE)
+cache_dir <- path.expand(Sys.getenv("NARRATION_CACHE_DIR", "~/.cache/readcast/narrations"))
 dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
 if (!dir.exists(cache_dir)) stop("Cannot create narration cache: ", cache_dir)
 shiny::addResourcePath("clipping-assets", clippings_dir)
