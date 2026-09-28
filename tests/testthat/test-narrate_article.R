@@ -1,4 +1,4 @@
-source("R/narrate_article.R")
+source(if (file.exists("R/narrate_article.R")) "R/narrate_article.R" else "../../R/narrate_article.R")
 testthat::test_that("chunks preserve text and keep a title with its name", {
   text <- "Mr. Smith spoke.  Then left!\n\nA third sentence?"
   chunks <- split_article(text, word_limit = 4L, char_limit = 30L)

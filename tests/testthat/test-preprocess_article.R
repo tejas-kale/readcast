@@ -1,4 +1,4 @@
-source("R/preprocess_article.R")
+source(if (file.exists("R/preprocess_article.R")) "R/preprocess_article.R" else "../../R/preprocess_article.R")
 testthat::test_that("front matter becomes a short spoken opening", {
   clipping <- '---\ntitle: "The rise of Narendra Modi"\nauthor:\n  - "[[Vinod K Jose]]"\npublished: 2012-03-01\ntags:\n  - clippings\n---\n\n**ON THE AFTERNOON OF 22 APRIL 1498** ...'
   testthat::expect_identical(spoken_preamble(clipping), "The rise of Narendra Modi. By Vinod K Jose. Published 1 March 2012.\n\n**ON THE AFTERNOON OF 22 APRIL 1498** ...")
@@ -6,7 +6,6 @@ testthat::test_that("front matter becomes a short spoken opening", {
   testthat::expect_identical(spoken_preamble("---\ntitle: Untitled\n---\n\nBody"), "Untitled.\n\nBody")
 })
 
-source("R/preprocess_article.R")
 testthat::test_that("images, source references and newsletter furniture disappear", {
   excerpt <- paste0("The token usage chart below shows this sudden adoption surge:\n\n",
                     "![](images/inside-openais-agentic-software-factory-0.png)\n\n",
@@ -34,7 +33,6 @@ testthat::test_that("images, source references and newsletter furniture disappea
                              "She read a Wikipedia entry yesterday.")
 })
 
-source("R/preprocess_article.R")
 testthat::test_that("blockquotes become spoken paragraphs without an editorial cue", {
   excerpt <- "Andrew Ambrosino told me:\n\n> The big theme is coding agents.\n> They write artifacts.\n\nMy commentary.\n\n> A second quote."
   expected <- "Andrew Ambrosino told me:\n\nThe big theme is coding agents. They write artifacts.\n\nMy commentary.\n\nA second quote."
@@ -44,7 +42,6 @@ testthat::test_that("blockquotes become spoken paragraphs without an editorial c
   testthat::expect_identical(cue_blockquotes("Already plain.\n\nStill plain."), "Already plain.\n\nStill plain.")
 })
 
-source("R/preprocess_article.R")
 testthat::test_that("Markdown markers disappear but spoken structure remains", {
   excerpt <- "## 1. Codex takes over at OpenAI\n\n- **Codex takes over at OpenAI.**\n\n> The big theme is coding agents.\n\nSee [the article](https://example.org) by [[Gergely Orosz]]."
   spoken <- speak_markdown_structure(excerpt)
@@ -57,14 +54,12 @@ testthat::test_that("Markdown markers disappear but spoken structure remains", {
   testthat::expect_identical(speak_markdown_structure("**IN THE SECOND WEEK OF JANUARY 2011**"), "In the second week of january 2011")
 })
 
-source("R/preprocess_article.R")
 testthat::test_that("speech punctuation is normalised without losing line breaks", {
   testthat::expect_identical(normalise_typography("It’s rare—really rare…\u00a0“Today”"), "It's rare, really rare. \"Today\"")
   testthat::expect_identical(normalise_typography("2019–2023\u200b\nNext line"), "2019 to 2023\nNext line")
   testthat::expect_identical(normalise_typography("Plain ASCII stays.\nSecond line."), "Plain ASCII stays.\nSecond line.")
 })
 
-source("R/preprocess_article.R")
 testthat::test_that("integers become English words", {
   testthat::expect_identical(number_words(0), "zero")
   testthat::expect_identical(number_words(25), "twenty-five")
@@ -73,7 +68,6 @@ testthat::test_that("integers become English words", {
   testthat::expect_error(number_words(-1), "non-negative")
 })
 
-source("R/preprocess_article.R")
 testthat::test_that("four-digit dates are read as years", {
   testthat::expect_identical(year_words(1498), "fourteen ninety-eight")
   testthat::expect_identical(year_words(1900), "nineteen hundred")
@@ -84,7 +78,6 @@ testthat::test_that("four-digit dates are read as years", {
   testthat::expect_identical(year_words(42), "forty-two")
 })
 
-source("R/preprocess_article.R")
 testthat::test_that("amounts, percentages and dates are spoken", {
   testthat::expect_identical(speak_numbers("$450 billion"), "four hundred and fifty billion dollars")
   testthat::expect_identical(speak_numbers("$1,000 and Rs 1,000"), "one thousand dollars and one thousand rupees")
@@ -96,7 +89,6 @@ testthat::test_that("amounts, percentages and dates are spoken", {
   testthat::expect_identical(speak_numbers("Vikaas Purush and API v2"), "Vikaas Purush and API v2")
 })
 
-source("R/preprocess_article.R")
 testthat::test_that("reviewed respellings match terms, not larger words", {
   lexicon <- c("Vikaas Purush" = "Vee-kaas Poo-roosh")
   testthat::expect_identical(apply_respellings("*Vikaas Purush*, or Development Man.", lexicon), "*Vee-kaas Poo-roosh*, or Development Man.")
@@ -105,7 +97,6 @@ testthat::test_that("reviewed respellings match terms, not larger words", {
   testthat::expect_identical(apply_respellings("Unchanged without a lexicon."), "Unchanged without a lexicon.")
 })
 
-source("R/preprocess_article.R")
 testthat::test_that("the complete pipeline combines each step", {
   clipping <- '---\ntitle: "The rise of Narendra Modi"\nauthor:\n  - "[[Vinod K Jose]]"\npublished: 2012-03-01\n---\n\n**ON THE AFTERNOON OF 22 APRIL 1498**, Vikaas Purush drew a crowd.\n\n![](images/the-rise-of-narendra-modi-0.jpg)\n\n> “The figure was $450 billion.”'
   spoken <- preprocess_markdown(clipping, c("Vikaas Purush" = "Vee-kaas Poo-roosh"))
