@@ -321,7 +321,7 @@ server <- function(input, output, session) {
     if (is.null(input$article) || !nzchar(input$article)) return()
     item <- article()
     shiny::updateTextInput(session, "episode_title", value = default_episode_title(item$title, input$model %||% "", input$voice %||% ""))
-  }, ignoreInit = TRUE)
+  })
 
   shiny::observeEvent(input$open_setup, {
     settings <- readcast_setup_settings()
