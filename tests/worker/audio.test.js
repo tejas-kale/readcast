@@ -62,3 +62,13 @@ test("unsupported methods and missing objects have HTTP errors", async () => {
   const missing = await worker.fetch(new Request("https://audio.example/missing.mp3"), { AUDIO_BUCKET: { head: async () => null } });
   assert.equal(missing.status, 404);
 });
+
+test("R2 failures return structured retryable errors", async () => {
+  const failed = await worker.fetch(new Request("https://audio.example/audio/test.mp3"), {
+    AUDIO_BUCKET: { head: async () => { throw new Error("storage timeout"); } },
+  });
+  assert.equal(failed.status, 503);
+  assert.equal(failed.headers.get("Retry-After"), "60");
+  assert.match(failed.headers.get("Content-Type"), /^application\/json/);
+  assert.deepEqual(await failed.json(), { error: "Audio storage is temporarily unavailable", retryable: true });
+});

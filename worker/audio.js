@@ -57,7 +57,10 @@ export default {
       return new Response(object.body, { status: 200, headers });
     } catch (error) {
       console.error(JSON.stringify({ message: "R2 audio read failed", key, error: error instanceof Error ? error.message : String(error) }));
-      return new Response("Audio storage is temporarily unavailable", { status: 503, headers: { "Retry-After": "60" } });
+      return Response.json(
+        { error: "Audio storage is temporarily unavailable", retryable: true },
+        { status: 503, headers: { "Retry-After": "60" } },
+      );
     }
   },
 };
