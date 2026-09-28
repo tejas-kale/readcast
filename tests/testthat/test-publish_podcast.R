@@ -40,6 +40,35 @@ testthat::test_that("episode defaults and RSS include stable podcast metadata", 
   testthat::expect_error(build_podcast_feed(list(), "https://reader.github.io/podcast"), "no published episodes")
 })
 
+testthat::test_that("remote feed upserts one GUID and preserves other items and show metadata", {
+  prior <- list(eligible = "true", title = "Earlier", description = "Old", guid = "urn:readcast:old",
+    published = "Mon, 01 Jan 2024 12:00:00 GMT", audio_url = "https://audio.example/old.mp3", audio_size = "12")
+  current <- list(eligible = "true", title = "New", description = "Metadata description", guid = "urn:readcast:new",
+    published = "", audio_url = "https://audio.example/new.mp3", audio_size = "42")
+  existing <- sub("<title>Readcast</title>", "<title>My existing show</title>",
+    build_podcast_feed(list(prior), "https://reader.github.io/podcast", cover_url = "https://cdn.example/show.png"))
+  merged <- upsert_podcast_feed(existing, list(current, current), "https://reader.github.io/podcast", "Ignored", "Ignored", "fr", "true", "https://reader.github.io/podcast/cover.png")
+  xml <- xml2::read_xml(merged)
+  testthat::expect_identical(xml2::xml_text(xml2::xml_find_first(xml, "/rss/channel/title")), "My existing show")
+  testthat::expect_identical(xml2::xml_text(xml2::xml_find_first(xml, "/rss/channel/language")), "en")
+  guids <- xml2::xml_text(xml2::xml_find_all(xml, "/rss/channel/item/guid"))
+  testthat::expect_setequal(guids, c("urn:readcast:old", "urn:readcast:new"))
+  testthat::expect_identical(sum(guids == "urn:readcast:new"), 1L)
+  testthat::expect_identical(podcast_feed_cover_url(existing, "fallback"), "https://cdn.example/show.png")
+  testthat::expect_identical(podcast_episode_status(NULL), "pending")
+  testthat::expect_identical(podcast_episode_status(current), "recoverable")
+  abandoned <- current
+  abandoned$guid <- "urn:readcast:recoverable"
+  testthat::expect_length(podcast_feed_candidates(list(abandoned), current, remote_feed_exists = TRUE), 1L)
+  testthat::expect_length(podcast_feed_candidates(list(abandoned), current, remote_feed_exists = FALSE), 1L)
+  saved_complete <- prior
+  saved_complete$publication_state <- "complete"
+  candidates_without_remote <- podcast_feed_candidates(list(abandoned, saved_complete), current, remote_feed_exists = FALSE)
+  testthat::expect_setequal(vapply(candidates_without_remote, `[[`, character(1), "guid"), c(prior$guid, current$guid))
+  current$publication_state <- "complete"
+  testthat::expect_identical(podcast_episode_status(current), "complete")
+})
+
 testthat::test_that("Pages publication rejects failed requests and verifies public resources", {
   calls <- character()
   fake <- function(request) {
@@ -83,9 +112,21 @@ testthat::test_that("episode publication verifies audio, cover and the live RSS 
   Sys.setenv(GITHUB_TOKEN = "test-token")
   Sys.unsetenv("READCAST_PAGES_URL")
   calls <- character()
+  feed_puts <- 0L
+  uploads <- 0L
+  fail_feed_put <- TRUE
   fake <- function(request) {
     calls <<- c(calls, paste(request$method %||% "GET", request$url))
     if (grepl("api.github.com", request$url)) {
+      if (identical(request$method, "PUT") && grepl("feed[.]xml", request$url)) {
+        feed_puts <<- feed_puts + 1L
+        if (fail_feed_put) return(httr2::response(status_code = 500L, url = request$url))
+      }
+      if (identical(request$method, "GET") && grepl("feed[.]xml", request$url)) {
+        encoded <- base64enc::base64encode(charToRaw(live_feed), linewidth = 0L, newline = "")
+        body <- charToRaw(jsonlite::toJSON(list(sha = "feed-sha", content = encoded), auto_unbox = TRUE))
+        return(httr2::response(status_code = 200L, url = request$url, body = body))
+      }
       status <- if (identical(request$method, "PUT")) 201L else 404L
       return(httr2::response(status_code = status, url = request$url))
     }
@@ -93,12 +134,26 @@ testthat::test_that("episode publication verifies audio, cover and the live RSS 
     headers <- if (identical(request$url, cover_url)) list(`content-type` = "image/png") else list(`content-type` = "audio/mpeg", `content-length` = "42")
     httr2::response(url = request$url, method = request$method, headers = headers)
   }
-  uploader <- function(path, config_dir) list(url = episode$audio_url, size = as.numeric(episode$audio_size))
-  result <- publish_podcast_episode(clipping, mp3, cover, episode, config_dir = config, data_dir = state,
+  uploader <- function(path, config_dir) { uploads <<- uploads + 1L; list(url = episode$audio_url, size = as.numeric(episode$audio_size)) }
+  unrelated_recoverable <- episode
+  unrelated_recoverable$guid <- "urn:readcast:unfinished-other-episode"
+  other_clipping <- file.path(directory, "other.md")
+  writeLines("# Another article", other_clipping)
+  save_podcast_episode(other_clipping, unrelated_recoverable, state)
+  testthat::expect_error(publish_podcast_episode(clipping, mp3, cover, episode, config_dir = config, data_dir = state,
+    audio_uploader = uploader, perform = fake), "rejected feed.xml")
+  saved_after_failure <- read_podcast_episode(clipping, "model/voice", "Harper", state)
+  testthat::expect_identical(podcast_episode_status(saved_after_failure), "recoverable")
+  testthat::expect_identical(saved_after_failure$audio_url, episode$audio_url)
+  fail_feed_put <- FALSE
+  result <- publish_podcast_episode(clipping, mp3, cover, saved_after_failure, config_dir = config, data_dir = state,
     audio_uploader = uploader, perform = fake)
   testthat::expect_identical(result$feed_url, "https://reader.github.io/podcast/feed.xml")
   testthat::expect_true(any(grepl("HEAD https://audio.example/audio/hash.mp3", calls, fixed = TRUE)))
   testthat::expect_true(any(grepl("HEAD https://reader.github.io/podcast/cover.png", calls, fixed = TRUE)))
   testthat::expect_true(any(grepl("GET https://reader.github.io/podcast/feed.xml", calls, fixed = TRUE)))
+  testthat::expect_identical(uploads, 1L)
+  testthat::expect_identical(feed_puts, 2L)
   testthat::expect_identical(read_podcast_episode(clipping, "model/voice", "Harper", state)$audio_size, "42")
+  testthat::expect_identical(podcast_episode_status(read_podcast_episode(clipping, "model/voice", "Harper", state)), "complete")
 })

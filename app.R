@@ -321,6 +321,16 @@ server <- function(input, output, session) {
     if (is.null(input$article) || !nzchar(input$article)) return()
     item <- article()
     shiny::updateTextInput(session, "episode_title", value = default_episode_title(item$title, input$model %||% "", input$voice %||% ""))
+    if (is.null(input$model) || !nzchar(input$model) || is.null(input$voice) || !nzchar(input$voice)) {
+      publish_state$episode_status <- "Publication pending: choose a model and voice to identify the episode."
+      return()
+    }
+    saved <- read_podcast_episode(selected_path(), input$model, input$voice)
+    status <- podcast_episode_status(saved)
+    publish_state$episode_status <- switch(status,
+      pending = "Publication pending: no audio has been published for this episode.",
+      recoverable = "Publication recoverable: the uploaded audio is saved; publish again to complete the feed.",
+      complete = "Publication complete.")
   })
 
   shiny::observeEvent(input$open_setup, {
@@ -483,8 +493,9 @@ server <- function(input, output, session) {
     }
     output_path <- current_cache()
     if (!file.exists(output_path) || file.info(output_path)$size <= 0L) stop("Generate or select an existing cached narration before publishing.", call. = FALSE)
+    publish_state$episode_status <- "Publication pending: uploading audio and updating the feed."
     result <- publish_podcast_episode(path, output_path, cover_files$approved, episode)
-    publish_state$episode_status <- paste("Published RSS feed:", result$feed_url)
+    publish_state$episode_status <- paste("Publication complete. RSS feed:", result$feed_url)
     shiny::showModal(shiny::modalDialog(title = "Podcast published", shiny::p("RSS feed:", shiny::tags$a(href = result$feed_url, target = "_blank", rel = "noopener noreferrer", result$feed_url)),
       shiny::p("In Apple Podcasts, choose Add a Show by URL, paste the feed URL, and follow the show."), footer = shiny::modalButton("Done"), easyClose = TRUE))
     invisible(result)
@@ -499,13 +510,19 @@ server <- function(input, output, session) {
         shiny::p("Is this clipping eligible for podcast publication? Confirm that you have the rights to publish its narration and metadata."),
         footer = shiny::tagList(shiny::actionButton("confirm_episode_eligible", "Yes, publish this clipping"), shiny::actionButton("deny_episode_eligible", "No, mark ineligible"), shiny::modalButton("Cancel")), easyClose = TRUE))
     } else tryCatch(publish_episode_now(), error = function(error) {
-      publish_state$episode_status <- conditionMessage(error)
+      saved <- read_podcast_episode(selected_path(), input$model, input$voice)
+      publish_state$episode_status <- if (identical(podcast_episode_status(saved), "recoverable")) {
+        paste("Publication recoverable: uploaded audio is saved. Retry to finish publishing the feed.", conditionMessage(error))
+      } else paste("Publication pending:", conditionMessage(error))
       shiny::showNotification(publish_state$episode_status, type = "error", duration = NULL)
     })
   })
   shiny::observeEvent(input$confirm_episode_eligible, {
     tryCatch(publish_episode_now(), error = function(error) {
-      publish_state$episode_status <- conditionMessage(error)
+      saved <- read_podcast_episode(selected_path(), input$model, input$voice)
+      publish_state$episode_status <- if (identical(podcast_episode_status(saved), "recoverable")) {
+        paste("Publication recoverable: uploaded audio is saved. Retry to finish publishing the feed.", conditionMessage(error))
+      } else paste("Publication pending:", conditionMessage(error))
       shiny::showNotification(publish_state$episode_status, type = "error", duration = NULL)
     })
   })
