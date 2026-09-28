@@ -1,0 +1,164 @@
+spoken_preamble <- function(markdown) {
+  match <- stringr::str_match(markdown, stringr::regex("\\A---[ \\t]*\\n(.*?)\\n---[ \\t]*(?:\\n|\\z)", dotall = TRUE))
+  if (is.na(match[1, 1])) return(markdown)
+
+  metadata <- yaml::yaml.load(match[1, 2])
+  body <- stringr::str_sub(markdown, stringr::str_length(match[1, 1]) + 1L)
+  title <- if (is.null(metadata$title)) "" else as.character(metadata$title)
+  author <- if (is.null(metadata$author)) "" else as.character(unlist(metadata$author, use.names = FALSE)[1])
+  author <- stringr::str_replace_all(author, "\\[\\[([^]|]+)(?:\\|[^]]+)?\\]\\]", "\\1")
+  published <- if (is.null(metadata$published)) "" else as.character(metadata$published)
+  publication_date <- suppressWarnings(as.Date(published))
+  if (!is.na(publication_date)) {
+    months <- c("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+    published <- paste(as.integer(format(publication_date, "%d")), months[as.integer(format(publication_date, "%m"))], format(publication_date, "%Y"))
+  }
+  opening <- paste(c(title, if (nzchar(author)) paste("By", author), if (nzchar(published)) paste("Published", published)), collapse = ". ")
+  if (!nzchar(opening)) return(stringr::str_trim(body, side = "left"))
+  paste0(opening, ".\n\n", stringr::str_trim(body, side = "left"))
+}
+
+remove_images_and_chrome <- function(text) {
+  text |>
+    stringr::str_remove_all(stringr::regex("(?m)^[ \\t]*!\\[[^]]*\\]\\([^\\n)]*\\)[ \\t]*\\n?")) |>
+    stringr::str_remove_all(stringr::regex("(?im)^\\*?the bottom of this article could be cut off in some email clients[^\\n]*\\n?")) |>
+    stringr::str_remove_all(stringr::regex("(?im)^\\[read the full article online\\]\\([^\\n)]*\\)[ \\t]*\\n?")) |>
+    stringr::str_remove_all(stringr::regex("(?im)^[ \\t]*(?:source|references?):[ \\t]*[^\\n]*\\n?")) |>
+    stringr::str_remove_all(stringr::regex("(?im)^[ \\t]*\\[(?:source|references?)\\]\\([^\\n)]*\\)[ \\t]*\\n?")) |>
+    stringr::str_remove_all(stringr::regex("(?i)\\[(?:source|references?)\\]\\(https?://[^\\n)]*\\)")) |>
+    stringr::str_remove_all(stringr::regex("(?m)^[ \\t]*\\[[^]\\n]+\\]:[ \\t]*<?https?://[^\\n]*\\n?")) |>
+    stringr::str_remove_all(stringr::regex("(?m)^[ \\t]*\\[\\^[^]\\n]+\\]:[^\\n]*\\n?")) |>
+    stringr::str_remove_all("\\[\\^[^]\\n]+\\]") |>
+    stringr::str_replace_all("\\[([^]]+)\\]\\((?:<https?://[^>\\n]+>|https?://[^\\n)]*)\\)", "\\1") |>
+    stringr::str_remove_all(stringr::regex("(?im)^[ \\t]*(?:visit|see|read)[ \\t]+https?://[^\\n]*\\n?")) |>
+    stringr::str_remove_all(stringr::regex("(?im)^[ \\t]*(?:https?://|www\\.)[^\\n]*\\n?")) |>
+    stringr::str_remove_all(stringr::regex("(?i)\\b(?:https?://|www\\.)[^\\s<>]+"))
+}
+
+cue_blockquotes <- function(text) {
+  lines <- stringr::str_split(text, "\n", simplify = FALSE)[[1]]
+  if (!any(stringr::str_detect(lines, "^ {0,3}>"))) return(text)
+
+  output <- character()
+  quoted_lines <- character()
+  flush_quote <- function(output, quoted_lines) {
+    paragraphs <- list()
+    current <- character()
+    for (line in c(quoted_lines, "")) {
+      if (nzchar(line)) {
+        current <- c(current, line)
+      } else if (length(current)) {
+        paragraphs[[length(paragraphs) + 1L]] <- paste(current, collapse = " ")
+        current <- character()
+      }
+    }
+    if (length(output) && nzchar(tail(output, 1L))) output <- c(output, "")
+    c(output, paste(unlist(paragraphs), collapse = "\n\n"))
+  }
+  for (line in lines) {
+    if (stringr::str_detect(line, "^ {0,3}>")) {
+      quoted_lines <- c(quoted_lines, stringr::str_trim(stringr::str_remove(line, "^ {0,3}> ?")))
+    } else {
+      if (length(quoted_lines)) {
+        output <- flush_quote(output, quoted_lines)
+        quoted_lines <- character()
+        if (nzchar(line)) output <- c(output, "")
+      }
+      output <- c(output, line)
+    }
+  }
+  if (length(quoted_lines)) output <- flush_quote(output, quoted_lines)
+  stringr::str_replace_all(paste(output, collapse = "\n"), "\n{3,}", "\n\n")
+}
+
+speak_markdown_structure <- function(text) {
+  text <- stringr::str_replace_all(text, "\\[([^]]+)\\]\\([^\\n)]*\\)", "\\1")
+  text <- stringr::str_replace_all(text, "\\[\\[([^]|]+)\\|([^]]+)\\]\\]", "\\2")
+  text <- stringr::str_replace_all(text, "\\[\\[([^]]+)\\]\\]", "\\1")
+  text <- cue_blockquotes(text)
+  text <- stringr::str_remove_all(text, stringr::regex("(?m)^[ \\t]*[-*+][ \\t]+"))
+  text <- stringr::str_remove_all(text, stringr::regex("(?m)^[ \\t]*[0-9]+\\.[ \\t]+"))
+  text <- stringr::str_replace_all(text, stringr::regex("(?m)^#{1,6}[ \\t]+[^\\n]+"), function(hit) paste0(stringr::str_remove(hit, "^#{1,6}[ \\t]+") |> stringr::str_remove("[ .]+$"), ".\n"))
+  text <- stringr::str_replace_all(text, "\\*\\*[A-Z][A-Z0-9 ,.-]{8,}\\*\\*", function(hit) stringr::str_to_sentence(stringr::str_sub(hit, 3L, -3L)))
+  text <- stringr::str_replace_all(text, "(?<!\\w)[*_]{1,2}([^\\n]*?)[*_]{1,2}(?!\\w)", "\\1")
+  text <- stringr::str_replace_all(text, "`([^`]+)`", "\\1")
+  stringr::str_trim(stringr::str_replace_all(text, "\\n{3,}", "\n\n"))
+}
+
+normalise_typography <- function(text) {
+  text <- stringi::stri_trans_nfc(text)
+  text <- stringr::str_replace_all(text, c("‘" = "'", "’" = "'", "“" = "\"", "”" = "\"", "—" = ", ", "–" = " to ", "…" = ".", "\u00a0" = " "))
+  stringr::str_replace_all(text, "[\\p{Cc}\\p{Cf}]", function(chars) ifelse(chars %in% c("\n", "\t"), chars, ""))
+}
+
+number_words <- function(number) {
+  if (length(number) != 1L || is.na(number) || number < 0 || number != floor(number)) stop("number_words needs one non-negative integer")
+  units <- c("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen")
+  tens <- c("", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety")
+  if (number < 20) return(units[[number + 1L]])
+  if (number < 100) return(paste0(tens[[floor(number / 10) + 1L]], if (number %% 10) paste0("-", units[[number %% 10 + 1L]]) else ""))
+  if (number < 1000) return(paste0(units[[floor(number / 100) + 1L]], " hundred", if (number %% 100) paste0(" and ", number_words(number %% 100)) else ""))
+  scales <- c(trillion = 1e12, billion = 1e9, million = 1e6, thousand = 1e3)
+  for (name in names(scales)) {
+    scale <- scales[[name]]
+    if (number >= scale) return(paste0(number_words(floor(number / scale)), " ", name, if (number %% scale) paste0(" ", number_words(number %% scale)) else ""))
+  }
+  stop("Unreachable number")
+}
+
+year_words <- function(year) {
+  if (year >= 1000 && year < 2000) {
+    century <- floor(year / 100)
+    rest <- year %% 100
+    if (rest == 0) return(paste(number_words(century), "hundred"))
+    if (rest < 10) return(paste(number_words(century), "oh", number_words(rest)))
+    return(paste(number_words(century), number_words(rest)))
+  }
+  if (year >= 2000 && year < 2010) return(paste0("two thousand", if (year > 2000) paste(" and", number_words(year - 2000)) else ""))
+  if (year >= 2020 && year < 2040) return(paste("two thousand and", number_words(year - 2000)))
+  if (year >= 2010 && year < 2100) return(paste("twenty", number_words(year - 2000)))
+  number_words(year)
+}
+
+speak_numbers <- function(text) {
+  months <- c("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+  date_pattern <- paste0("\\b([0-9]{1,2}) (", paste(months, collapse = "|"), ") ([0-9]{4})\\b")
+  text <- stringr::str_replace_all(text, stringr::regex(date_pattern, ignore_case = TRUE), function(hits) vapply(hits, function(hit) {
+    parts <- stringr::str_match(hit, stringr::regex(date_pattern, ignore_case = TRUE))
+    paste(number_words(as.integer(parts[1, 2])), stringr::str_to_title(parts[1, 3]), year_words(as.integer(parts[1, 4])))
+  }, character(1)))
+  amount <- "\\bRs[ \\t]*([0-9,]+)(?:[ \\t]+(billion|million|thousand))?"
+  text <- stringr::str_replace_all(text, stringr::regex(amount, ignore_case = TRUE), function(hits) vapply(hits, function(hit) {
+    parts <- stringr::str_match(hit, stringr::regex(amount, ignore_case = TRUE))
+    scale <- if (is.na(parts[1, 3])) "" else parts[1, 3]
+    stringr::str_squish(paste(number_words(as.numeric(gsub(",", "", parts[1, 2]))), scale, "rupees"))
+  }, character(1)))
+  dollar <- "\\$([0-9,]+)(?:[ \\t]+(billion|million|thousand))?"
+  text <- stringr::str_replace_all(text, stringr::regex(dollar, ignore_case = TRUE), function(hits) vapply(hits, function(hit) {
+    parts <- stringr::str_match(hit, stringr::regex(dollar, ignore_case = TRUE))
+    scale <- if (is.na(parts[1, 3])) "" else parts[1, 3]
+    stringr::str_squish(paste(number_words(as.numeric(gsub(",", "", parts[1, 2]))), scale, "dollars"))
+  }, character(1)))
+  text <- stringr::str_replace_all(text, "\\b[0-9][0-9,]*[ \\t]*%", function(hits) vapply(hits, function(hit) paste(number_words(as.numeric(gsub("[^0-9]", "", hit))), "percent"), character(1)))
+  text <- stringr::str_replace_all(text, "\\b(?:1[5-9][0-9]{2}|20[0-9]{2})\\b", function(hits) vapply(hits, function(hit) year_words(as.integer(hit)), character(1)))
+  stringr::str_replace_all(text, "\\b[0-9][0-9,]*\\b", function(hits) vapply(hits, function(hit) number_words(as.numeric(gsub(",", "", hit))), character(1)))
+}
+
+apply_respellings <- function(text, replacements = character()) {
+  for (term in names(replacements)) {
+    pattern <- stringr::regex(paste0("(?<!\\w)", stringr::str_escape(term), "(?!\\w)"), ignore_case = TRUE)
+    text <- stringr::str_replace_all(text, pattern, function(hits) rep(unname(replacements[[term]]), length(hits)))
+  }
+  text
+}
+
+preprocess_markdown <- function(markdown, replacements = character()) {
+  text <- markdown |>
+    spoken_preamble() |>
+    remove_images_and_chrome() |>
+    speak_markdown_structure() |>
+    normalise_typography() |>
+    speak_numbers() |>
+    apply_respellings(replacements)
+  stringr::str_trim(stringr::str_replace_all(text, "\\n{3,}", "\n\n"))
+}
