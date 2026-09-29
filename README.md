@@ -70,17 +70,19 @@ data_dir: ~/.local/share/readcast
 
 ## Set up publishing with the CLI
 
-Publishing is optional. These commands create a dedicated public GitHub Pages repository and a private Cloudflare R2 bucket served by the bundled Worker. Run them from this checkout. You need `gh`, Node.js/npm, `curl`, and `jq`. Before running Wrangler, activate R2 for your account in the [Cloudflare dashboard](https://developers.cloudflare.com/r2/get-started/): **Storage & databases → R2 → Overview → complete checkout**. Cloudflare does not document a Wrangler command for the initial R2 subscription; subsequent bucket and Worker setup uses the CLI. Wrangler's login opens a browser. The R2 API token command below also needs a one-time bootstrap token from the [Cloudflare dashboard](https://developers.cloudflare.com/fundamentals/api/how-to/create-via-api/) with **Account API Tokens Write** permission. Keep all tokens out of this repository and `config.yml`.
+Publishing is optional. These commands create a dedicated public GitHub Pages repository and a private Cloudflare R2 bucket served by the bundled Worker. Run them from this checkout. You need `gh`, Node.js/npm, `curl`, and `jq`. Before running Wrangler, activate R2 for your account in the [Cloudflare dashboard](https://developers.cloudflare.com/r2/get-started/): **Storage & databases → R2 → Overview → complete checkout**. Cloudflare does not document a Wrangler command for the initial R2 subscription; subsequent bucket and Worker setup uses the CLI. Wrangler's login opens a browser. Keep all tokens out of this repository and `config.yml`.
+
+The CLI recipe for R2 credentials needs a one-time **bootstrap account API token**. In the [Cloudflare dashboard](https://developers.cloudflare.com/fundamentals/api/get-started/account-owned-tokens/), select your account, then **Manage account → Account API tokens → Create Token**. Name it `readcast-bootstrap`, grant **Account → Account API Tokens → Edit** for that account, and set a short expiry if suitable. You need Super Administrator or API Token Provisioning access to create it. Review, create, and copy the token value when shown; Cloudflare shows it only once. Use that value at the silent prompt below, then revoke the bootstrap token after creating the narrower R2 token. This bootstrap token is distinct from the R2 S3 access key and secret key that Readcast uses. [Cloudflare's token creation guide](https://developers.cloudflare.com/fundamentals/api/how-to/create-via-api/) documents the initial token and permission.
 
 ### Cloudflare: bucket, Worker, and R2 credentials
 
-Authenticate Wrangler, create the Standard-storage bucket, and deploy the Worker from `worker/`. Its existing `wrangler.jsonc` binds `AUDIO_BUCKET` to `readcast-audio`. Record the account ID shown by `whoami` and the permanent `https://…workers.dev` URL printed by `deploy`; do not change that Worker address after publishing audio. The bucket stays private: there is no need to enable an `r2.dev` public URL. See the [Wrangler login](https://developers.cloudflare.com/workers/wrangler/commands/general/), [R2 bucket](https://developers.cloudflare.com/r2/reference/wrangler-commands/), and [Worker deployment](https://developers.cloudflare.com/workers/get-started/guide/) documentation.
+Authenticate Wrangler and create the Standard-storage bucket from the checkout root, then deploy the Worker from `worker/`. Creating the bucket outside `worker/` keeps Wrangler from adding a second bucket binding to its configuration; the existing `wrangler.jsonc` already binds `AUDIO_BUCKET` to `readcast-audio`. Record the account ID shown by `whoami` and the permanent `https://…workers.dev` URL printed by `deploy`; do not change that Worker address after publishing audio. The bucket stays private: there is no need to enable an `r2.dev` public URL. See the [Wrangler login](https://developers.cloudflare.com/workers/wrangler/commands/general/), [R2 bucket](https://developers.cloudflare.com/r2/reference/wrangler-commands/), and [Worker deployment](https://developers.cloudflare.com/workers/get-started/guide/) documentation.
 
 ```sh
-cd worker
 npx wrangler login
 npx wrangler whoami
 npx wrangler r2 bucket create readcast-audio
+cd worker
 npx wrangler deploy
 cd ..
 ```
