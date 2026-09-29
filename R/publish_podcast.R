@@ -337,7 +337,8 @@ verify_live_podcast_feed <- function(url, episode, cover_url, perform = httr2::r
 
 publish_podcast_episode <- function(clipping_path, mp3_path, approved_cover, episode, config_dir = path.expand("~/.config/readcast"),
                                     data_dir = path.expand("~/.local/share/readcast/podcast-episodes"),
-                                    audio_uploader = upload_cached_audio, perform = httr2::req_perform) {
+                                    audio_uploader = upload_cached_audio, perform = httr2::req_perform,
+                                    on_progress = function(message) invisible(NULL)) {
   if (!identical(episode$eligible, "true")) stop("Confirm this clipping is eligible before publishing.", call. = FALSE)
   if (!file.exists(mp3_path) || dir.exists(mp3_path) || file.info(mp3_path)$size <= 0) stop("Select an existing cached MP3 before publishing.", call. = FALSE)
   if (!file.exists(approved_cover)) stop("Approve a podcast cover before publishing.", call. = FALSE)
@@ -350,6 +351,7 @@ publish_podcast_episode <- function(clipping_path, mp3_path, approved_cover, epi
   audio_digest <- digest::digest(file = mp3_path, algo = "sha256", serialize = FALSE)
   if (identical(episode$audio_digest %||% "", audio_digest) && nzchar(episode$audio_url %||% "") && nzchar(episode$audio_size %||% "") &&
       (episode$publication_state %||% "") %in% c("recoverable", "replacement-uploaded")) {
+    on_progress("Using the audio upload already saved")
     uploaded <- list(url = episode$audio_url, size = as.numeric(episode$audio_size))
   } else {
     if (!identical(episode$replacement_digest %||% "", audio_digest) || !nzchar(episode$replacement_key %||% "")) {
@@ -359,6 +361,7 @@ publish_podcast_episode <- function(clipping_path, mp3_path, approved_cover, epi
       episode$replacement_old_key <- if (nzchar(episode$replacement_old_url)) sub("^[^:]+://[^/]+/", "", episode$replacement_old_url) else ""
       save_podcast_episode(clipping_path, episode, data_dir)
     }
+    on_progress("Uploading the MP3")
     uploaded <- audio_uploader(mp3_path, config_dir = config_dir, object_key = episode$replacement_key)
     episode$audio_url <- uploaded$url
     episode$audio_size <- as.character(uploaded$size)
@@ -376,24 +379,30 @@ publish_podcast_episode <- function(clipping_path, mp3_path, approved_cover, epi
   # Record the successful upload before any later Pages or verification call can fail.
   episode$publication_state <- "recoverable"
   save_podcast_episode(clipping_path, episode, data_dir)
+  on_progress("Checking the uploaded MP3")
   verify_public_resource(uploaded$url, expected_type = "audio/mpeg", expected_length = uploaded$size, perform = perform)
   cover_path <- "cover.png"
+  on_progress("Uploading podcast artwork")
   publish_pages_file(repository$owner, repository$repository, cover_path, readBin(approved_cover, "raw", n = file.info(approved_cover)$size), token, perform)
   cover_url <- paste0(pages_url, "/", cover_path)
   cover_size <- file.info(approved_cover)$size
+  on_progress("Waiting for artwork to become available")
   with_pages_visibility_retry(function() verify_public_resource(cover_url, expected_type = "image/png", expected_length = cover_size, perform = perform), perform)
   episodes <- list.files(data_dir, pattern = "\\.dcf$", full.names = TRUE)
   saved <- lapply(episodes, function(path) as.list(read.dcf(path)[1L, , drop = TRUE]))
   same <- vapply(saved, function(item) identical(item$guid, episode$guid), logical(1))
   if (any(same)) saved[[which(same)[1L]]] <- episode else saved <- c(saved, list(episode))
+  on_progress("Reading the current podcast feed")
   feed_current <- read_pages_feed(repository$owner, repository$repository, token, perform)
   feed_episodes <- podcast_feed_candidates(saved, episode, !is.null(feed_current$feed))
   published_cover_url <- podcast_feed_cover_url(feed_current$feed, cover_url)
   feed <- upsert_podcast_feed(feed_current$feed, feed_episodes, pages_url, show_title = settings$podcast_title,
     show_description = settings$podcast_description, language = settings$podcast_language,
     explicit = settings$podcast_explicit, cover_url = cover_url)
+  on_progress("Updating the podcast feed")
   publish_pages_file(repository$owner, repository$repository, "feed.xml", charToRaw(feed), token, perform, current = feed_current$response)
   feed_url <- paste0(pages_url, "/feed.xml")
+  on_progress("Waiting for the published episode to appear")
   with_pages_visibility_retry(function() verify_live_podcast_feed(feed_url, episode, published_cover_url, perform), perform)
   if (nzchar(episode$replacement_old_url %||% "") && !identical(episode$replacement_old_url, episode$audio_url)) {
     entries <- read_podcast_retention(data_dir)
@@ -408,5 +417,6 @@ publish_podcast_episode <- function(clipping_path, mp3_path, approved_cover, epi
   episode$replacement_old_url <- ""
   episode$replacement_old_key <- ""
   save_podcast_episode(clipping_path, episode, data_dir)
+  on_progress("Publication complete")
   list(feed_url = feed_url, audio_url = uploaded$url, title = episode$title)
 }

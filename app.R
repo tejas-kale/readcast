@@ -285,7 +285,8 @@ ui <- shiny::fluidPage(
       shiny::tags$article(class = "reader",
       shiny::uiOutput("article_header"), shiny::uiOutput("article_body")))
   ),
-  shiny::tags$footer(class = "player-bar", shiny::uiOutput("player"))
+  shiny::tags$footer(class = "player-bar", shiny::uiOutput("player")),
+  shiny::tags$script(htmltools::HTML("(function() {\n  document.addEventListener('click', function(event) {\n    var button = event.target.closest('#publish_episode, #confirm_episode_eligible');\n    if (!button || button.disabled) return;\n    button.dataset.originalLabel = button.textContent;\n    button.textContent = 'Publishing…';\n    button.disabled = true;\n  });\n  Shiny.addCustomMessageHandler('publish-finished', function() {\n    ['publish_episode', 'confirm_episode_eligible'].forEach(function(id) {\n      var button = document.getElementById(id);\n      if (!button) return;\n      button.disabled = false;\n      button.textContent = button.dataset.originalLabel || (id === 'publish_episode' ? 'Publish MP3 to podcast feed' : 'Yes, publish this clipping');\n    });\n  });\n}());"))
 )
 
 server <- function(input, output, session) {
@@ -295,7 +296,7 @@ server <- function(input, output, session) {
   recovery <- if (nzchar(clippings_dir)) latest_recoverable_episode(clippings, clippings_dir, podcast_state_dir, module_dir, cache_dir) else NULL
   if (!is.null(recovery) && !recovery$model %in% models) models <- c(models, stats::setNames(recovery$model, recovery$model))
   preserve_recovery_voice <- shiny::reactiveVal(!is.null(recovery))
-  state <- shiny::reactiveValues(job = NULL, status = "Choose an article to begin.", refresh = 0L)
+  state <- shiny::reactiveValues(job = NULL, status = "", refresh = 0L)
   cover_state <- shiny::reactiveValues(status = "Edit the prompt, then generate a cover candidate.", refresh = 0L)
   cover_prompt_state <- shiny::reactiveVal(default_cover_prompt())
   publish_state <- shiny::reactiveValues(episode_status = "Confirm eligibility before the first publication of each clipping.", cleanup_status = "Cleanup checks the live feed and retains replaced audio for at least 30 days.")
@@ -365,10 +366,13 @@ server <- function(input, output, session) {
   output$setup_github_pages_result <- shiny::renderText(setup_state$github_pages$message)
 
   shiny::observeEvent(list(input$article, input$model, input$voice), {
-    if (is.null(input$article) || !nzchar(input$article)) return()
+    if (is.null(input$article) || !nzchar(input$article)) {
+      state$status <- ""
+      return()
+    }
     item <- article()
     if (is.null(input$model) || !nzchar(input$model) || is.null(input$voice) || !nzchar(input$voice)) {
-      publish_state$episode_status <- "Publication pending: restoring the saved narration model and voice."
+      publish_state$episode_status <- "Select a model and enter a voice to see this episode's MP3 status."
       return()
     }
     shiny::updateTextInput(session, "episode_title", value = default_episode_title(item$title, input$model, input$voice))
@@ -387,6 +391,10 @@ server <- function(input, output, session) {
       pending = "Publication pending: no audio has been published for this episode.",
       recoverable = "Publication recoverable: the uploaded audio is saved; publish again to complete the feed.",
       complete = "Publication complete.")
+    cached_audio <- tryCatch(cache_path(selected_path(), input$model, stringr::str_trim(input$voice), module_dir, cache_dir), error = function(error) NULL)
+    state$status <- if (!is.null(cached_audio) && file.exists(cached_audio) && file.info(cached_audio)$size > 0L) {
+      if (identical(status, "complete")) "Saved MP3 is ready to play." else "Saved MP3 is ready to play or publish."
+    } else ""
   })
 
   shiny::observeEvent(input$open_settings, {
@@ -475,7 +483,7 @@ server <- function(input, output, session) {
   publish_episode_now <- function(eligible = TRUE, identity = NULL) {
     path <- selected_path()
     identity <- identity %||% publish_identity(path)
-    if (is.null(identity)) stop("Wait for the saved narration model and voice to restore, or choose them before publishing.", call. = FALSE)
+    if (is.null(identity)) stop("Select a model and enter a voice before publishing.", call. = FALSE)
     model <- identity$model
     voice <- identity$voice
     episode <- read_podcast_episode(path, model, voice, podcast_state_dir)
@@ -499,9 +507,13 @@ server <- function(input, output, session) {
     }
     output_path <- cache_path(path, model, voice, module_dir, cache_dir)
     if (!file.exists(output_path) || file.info(output_path)$size <= 0L) stop("Generate or select an existing cached narration before publishing.", call. = FALSE)
-    publish_state$episode_status <- "Publication pending: uploading audio and updating the feed."
-    result <- publish_podcast_episode(path, output_path, cover_files$approved, episode)
+    result <- shiny::withProgress(message = "Publishing MP3 to podcast feed", value = NULL, {
+      publish_podcast_episode(path, output_path, cover_files$approved, episode, on_progress = function(message) {
+        shiny::setProgress(detail = message)
+      })
+    })
     publish_state$episode_status <- paste("Publication complete. RSS feed:", result$feed_url)
+    state$status <- "Saved MP3 is ready to play."
     shiny::showModal(shiny::modalDialog(title = "Podcast published", shiny::p("RSS feed:", shiny::tags$a(href = result$feed_url, target = "_blank", rel = "noopener noreferrer", result$feed_url)),
       shiny::p("In Apple Podcasts, choose Add a Show by URL, paste the feed URL, and follow the show."), footer = shiny::modalButton("Done"), easyClose = TRUE))
     invisible(result)
@@ -526,6 +538,7 @@ server <- function(input, output, session) {
   })
 
   shiny::observeEvent(input$publish_episode, {
+    on.exit(session$sendCustomMessage("publish-finished", list()), add = TRUE)
     path <- tryCatch(selected_path(), error = function(error) NULL)
     if (is.null(path)) {
       shiny::showNotification("Choose an article before publishing its MP3.", type = "error")
@@ -542,7 +555,7 @@ server <- function(input, output, session) {
       return()
     }
     if (is.null(identity)) {
-      message <- "Wait for the saved narration model and voice to restore, or choose them before publishing."
+      message <- "Select a model and enter a voice before publishing."
       publish_state$episode_status <- message
       shiny::showNotification(message, type = "message")
       return()
@@ -580,6 +593,7 @@ server <- function(input, output, session) {
     })
   })
   shiny::observeEvent(input$confirm_episode_eligible, {
+    on.exit(session$sendCustomMessage("publish-finished", list()), add = TRUE)
     path <- tryCatch(selected_path(), error = function(error) NULL)
     if (is.null(path)) {
       message <- "Choose an article before publishing its MP3."
@@ -598,7 +612,7 @@ server <- function(input, output, session) {
       return()
     }
     if (is.null(identity)) {
-      message <- "Wait for the saved narration model and voice to restore, or choose them before publishing."
+      message <- "Select a model and enter a voice before publishing."
       publish_state$episode_status <- message
       shiny::showNotification(message, type = "message")
       return()
@@ -615,7 +629,7 @@ server <- function(input, output, session) {
     tryCatch({
       path <- selected_path()
       identity <- publish_identity(path)
-      if (is.null(identity)) stop("Wait for the saved narration model and voice to restore, or choose them before deciding.", call. = FALSE)
+      if (is.null(identity)) stop("Select a model and enter a voice before deciding.", call. = FALSE)
       item <- article()
       confirm_podcast_eligibility(path, FALSE, input$episode_title,
         item$description, identity$model, identity$voice, podcast_state_dir)
