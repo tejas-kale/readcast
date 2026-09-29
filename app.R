@@ -136,8 +136,8 @@ a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 button, input, select { font: inherit; }
 button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, audio:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
-.app-shell { min-height: calc(100vh - 106px); display: grid; grid-template-columns: 310px minmax(0, 1fr); }
-.sidebar { position: sticky; top: 0; height: calc(100vh - 106px); overflow-y: auto; background: var(--sidebar); border-right: 1px solid var(--line); padding: 30px 22px; }
+.app-shell { min-height: calc(100vh - 170px); display: grid; grid-template-columns: 310px minmax(0, 1fr); }
+.sidebar { position: sticky; top: 64px; height: calc(100vh - 170px); overflow-y: auto; background: var(--sidebar); border-right: 1px solid var(--line); padding: 30px 22px; }
 .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 44px; font-size: 17px; font-weight: 700; letter-spacing: -.03em; }
 .brand-mark { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 11px; background: var(--text); color: var(--canvas); font-size: 19px; }
 .eyebrow { color: var(--muted); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; font-weight: 700; margin: 28px 0 10px; }
@@ -151,6 +151,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .generate-button { width: 100%; min-height: 45px; border: 0; border-radius: 11px; background: var(--accent); color: #fff; font-weight: 650; margin-top: 8px; box-shadow: 0 4px 12px rgba(0, 80, 160, .15); }
 .generate-button:hover { filter: brightness(1.08); }
 .setup-button { width: 100%; min-height: 40px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface); color: var(--text); font-weight: 600; margin: 0 0 18px; }
+.settings-bar { position: sticky; top: 0; z-index: 40; height: 64px; display: flex; justify-content: flex-end; align-items: center; padding: 0 clamp(20px, 3vw, 44px); background: var(--canvas); border-bottom: 1px solid var(--line); }
+.toolbar-button { min-height: 40px; padding: 0 16px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface); color: var(--text); font-weight: 600; }
+.primary-actions { display: grid; gap: 8px; margin-top: 30px; }
+.primary-actions .generate-button { margin-top: 0; }
+.modal-dialog .generate-button, .modal-dialog .setup-button { width: auto; padding: 0 16px; }
 .setup-check { border: 1px solid var(--line); border-radius: 11px; padding: 14px; margin: 10px 0; background: var(--surface); }
 .setup-check h4 { margin: 0 0 8px; font-size: 15px; }
 .setup-result { color: var(--muted); font-size: 13px; line-height: 1.5; margin: 10px 0 0; }
@@ -230,38 +235,30 @@ keyboard_shortcuts_js <- "
 
 ui <- shiny::fluidPage(
   shiny::tags$head(shiny::tags$title("Readcast"), shiny::tags$style(htmltools::HTML(app_css)), shiny::tags$script(htmltools::HTML(keyboard_shortcuts_js))),
+  shiny::tags$div(class = "settings-bar", shiny::actionButton("open_settings", "Settings", class = "toolbar-button", `aria-label` = "Open settings")),
   shiny::tags$div(class = "app-shell",
     shiny::tags$aside(class = "sidebar",
       shiny::tags$div(class = "brand", shiny::tags$span(class = "brand-mark", "♪"), "Readcast"),
-      shiny::actionButton("open_setup", "Check connections", class = "setup-button"),
       shiny::tags$div(class = "eyebrow", "Library"),
       shiny::selectizeInput("article", "Article", choices = NULL, options = list(placeholder = "Search clippings…", maxOptions = 50, openOnFocus = TRUE)),
       shiny::tags$div(class = "eyebrow", "Narration"),
       shiny::selectInput("model", "OpenRouter model", choices = NULL),
       shiny::textInput("voice", "Voice", value = ""),
       shiny::tags$p(class = "help-text", "Voices depend on the model. A default is filled in when known; otherwise enter a voice from the model’s page."),
-      shiny::tags$div(class = "eyebrow", "Podcast cover"),
-      shiny::textAreaInput("cover_prompt", "Starting prompt", value = default_cover_prompt(), rows = 4),
-      shiny::actionButton("generate_cover", "Generate cover candidate", class = "generate-button"),
-      shiny::uiOutput("cover_candidate"),
-      shiny::actionButton("approve_cover", "Approve this cover", class = "generate-button"),
-      shiny::tags$div(class = "status", shiny::textOutput("cover_status")),
-      shiny::actionButton("generate", "Generate audio", class = "generate-button"),
-      shiny::actionButton("publish_audio", "Upload cached audio to R2", class = "generate-button"),
-      shiny::tags$div(class = "status", shiny::textOutput("publish_status")),
       shiny::tags$div(class = "eyebrow", "Podcast episode"),
       shiny::textInput("episode_title", "Episode title", value = ""),
-      shiny::actionButton("publish_episode", "Publish episode and RSS feed", class = "generate-button"),
+      shiny::tags$div(class = "primary-actions",
+        shiny::actionButton("generate", "Generate audio", class = "generate-button"),
+        shiny::actionButton("publish_episode", "Publish MP3 to podcast feed", class = "generate-button")),
       shiny::tags$div(class = "status", shiny::textOutput("episode_status")),
-      shiny::actionButton("cleanup_audio", "Review aged audio cleanup", class = "generate-button"),
-      shiny::tags$div(class = "status", shiny::textOutput("cleanup_status")),
       shiny::tags$div(class = "status", shiny::textOutput("status")),
       shiny::tags$p(class = "help-text keyboard-help",
         shiny::tags$kbd("/"), "/", shiny::tags$kbd("a"), " find article · ", shiny::tags$kbd("m"), " model · ", shiny::tags$kbd("v"), " voice", shiny::tags$br(),
         shiny::tags$kbd("j"), "/", shiny::tags$kbd("k"), " scroll · ", shiny::tags$kbd("h"), "/", shiny::tags$kbd("l"), " seek · ", shiny::tags$kbd("Space"), " play/pause", shiny::tags$br(),
         shiny::tags$kbd("⌘/Ctrl+Enter"), " generate. Shortcuts pause while typing.")
     ),
-    shiny::tags$main(class = "reader-wrap", shiny::tags$article(class = "reader",
+    shiny::tags$main(class = "reader-wrap",
+      shiny::tags$article(class = "reader",
       shiny::uiOutput("article_header"), shiny::uiOutput("article_body")))
   ),
   shiny::tags$footer(class = "player-bar", shiny::uiOutput("player"))
@@ -273,7 +270,8 @@ server <- function(input, output, session) {
   models <- discover_tts_models()
   state <- shiny::reactiveValues(job = NULL, status = "Choose an article to begin.", refresh = 0L)
   cover_state <- shiny::reactiveValues(status = "Edit the prompt, then generate a cover candidate.", refresh = 0L)
-  publish_state <- shiny::reactiveValues(status = "Publishing is optional.", episode_status = "Confirm eligibility before the first publication of each clipping.", cleanup_status = "Cleanup checks the live feed and retains replaced audio for at least 30 days.")
+  cover_prompt_state <- shiny::reactiveVal(default_cover_prompt())
+  publish_state <- shiny::reactiveValues(episode_status = "Confirm eligibility before the first publication of each clipping.", cleanup_status = "Cleanup checks the live feed and retains replaced audio for at least 30 days.")
   setup_state <- shiny::reactiveValues(
     clippings = list(ok = FALSE, message = "Not checked."),
     openrouter = list(ok = FALSE, message = "Not checked."),
@@ -312,7 +310,6 @@ server <- function(input, output, session) {
   })
   output$status <- shiny::renderText(state$status)
   output$cover_status <- shiny::renderText(cover_state$status)
-  output$publish_status <- shiny::renderText(publish_state$status)
   output$episode_status <- shiny::renderText(publish_state$episode_status)
   output$cleanup_status <- shiny::renderText(publish_state$cleanup_status)
   output$setup_clippings_result <- shiny::renderText(setup_state$clippings$message)
@@ -337,9 +334,21 @@ server <- function(input, output, session) {
       complete = "Publication complete.")
   })
 
-  shiny::observeEvent(input$open_setup, {
+  shiny::observeEvent(input$open_settings, {
     shiny::showModal(shiny::modalDialog(
-      title = "Connection checks", size = "m", easyClose = TRUE,
+      title = "Settings", size = "l", easyClose = TRUE,
+      shiny::tags$h3("Podcast artwork"),
+      shiny::textAreaInput("cover_prompt", "Starting prompt", value = cover_prompt_state(), rows = 4),
+      shiny::actionButton("generate_cover", "Generate cover candidate", class = "generate-button"),
+      shiny::uiOutput("cover_candidate"),
+      shiny::actionButton("approve_cover", "Approve this cover", class = "generate-button"),
+      shiny::tags$div(class = "status", shiny::textOutput("cover_status")),
+      shiny::tags$hr(),
+      shiny::tags$h3("Maintenance"),
+      shiny::actionButton("cleanup_audio", "Review aged audio cleanup", class = "setup-button"),
+      shiny::tags$div(class = "status", shiny::textOutput("cleanup_status")),
+      shiny::tags$hr(),
+      shiny::tags$h3("Connection checks"),
       shiny::p("These checks use the settings in ~/.config/readcast/config.yml and credentials from your environment. They do not generate or publish audio or create cloud resources."),
       shiny::div(class = "setup-check", shiny::tags$h4("Clippings"), shiny::actionButton("check_setup_clippings", "Check Clippings"), shiny::tags$p(class = "setup-result", shiny::textOutput("setup_clippings_result"))),
       shiny::div(class = "setup-check", shiny::tags$h4("OpenRouter"), shiny::actionButton("check_setup_openrouter", "Check OpenRouter"), shiny::tags$p(class = "setup-result", shiny::textOutput("setup_openrouter_result"))),
@@ -348,6 +357,8 @@ server <- function(input, output, session) {
       shiny::div(class = "setup-check", shiny::tags$h4("GitHub Pages"), shiny::actionButton("check_setup_github_pages", "Check GitHub Pages site"), shiny::tags$p(class = "setup-result", shiny::textOutput("setup_github_pages_result"))),
       footer = shiny::modalButton("Close")))
   })
+
+  shiny::observeEvent(input$cover_prompt, cover_prompt_state(input$cover_prompt), ignoreInit = TRUE)
 
   shiny::observeEvent(input$check_setup_clippings, {
     setup_state$clippings <- setup_check_result(function() check_readcast_clippings(readcast_setup_settings()$clippings_dir))
@@ -404,27 +415,6 @@ server <- function(input, output, session) {
   current_cache <- shiny::reactive({
     shiny::req(input$article, input$model)
     cache_path(selected_path(), input$model, stringr::str_trim(input$voice %||% ""), module_dir, cache_dir)
-  })
-
-  shiny::observeEvent(input$publish_audio, {
-    path <- tryCatch(current_cache(), error = function(error) {
-      publish_state$status <- conditionMessage(error)
-      NULL
-    })
-    if (is.null(path)) return()
-    if (!file.exists(path) || file.info(path)$size <= 0L) {
-      publish_state$status <- "Generate or select an existing cached narration before uploading it."
-      shiny::showNotification(publish_state$status, type = "message")
-      return()
-    }
-    tryCatch({
-      uploaded <- upload_cached_audio(path)
-      publish_state$status <- paste("Hosted audio:", uploaded$url)
-      shiny::showNotification("Cached audio uploaded to R2.", type = "message")
-    }, error = function(error) {
-      publish_state$status <- conditionMessage(error)
-      shiny::showNotification(publish_state$status, type = "error", duration = NULL)
-    })
   })
 
   publish_episode_now <- function(eligible = TRUE) {
