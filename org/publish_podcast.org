@@ -1,0 +1,445 @@
+#+TITLE: Publish a narrated clipping as a podcast episode
+#+PROPERTY: header-args:R :tangle ../R/publish_podcast.R :comments no :session none
+
+This module publishes an already cached MP3. It keeps an explicit eligibility
+decision and episode metadata for each clipping, uploads the approved cover and
+RSS feed to the configured Pages repository, and verifies public resources.
+Episode identity is stable for a clipping title and its exact narration model
+and voice IDs, so alternate narrations can become separate episodes.
+
+* Per-clipping publication decisions
+
+#+begin_src R
+podcast_clipping_title <- function(clipping_path) {
+  if (length(clipping_path) != 1L || !file.exists(clipping_path) || dir.exists(clipping_path)) stop("Select an existing clipping before publishing.", call. = FALSE)
+  article <- readLines(clipping_path, warn = FALSE)
+  header <- grep("^---[[:space:]]*$", article)
+  if (length(header) >= 2L && header[[1L]] == 1L) {
+    metadata <- tryCatch(yaml::yaml.load(paste(article[(header[[1L]] + 1L):(header[[2L]] - 1L)], collapse = "\n")), error = function(error) NULL)
+    if (is.list(metadata)) return(as.character((metadata$title %||% tools::file_path_sans_ext(basename(clipping_path)))[[1L]]))
+  }
+  tools::file_path_sans_ext(basename(clipping_path))
+}
+
+podcast_episode_id <- function(clipping_path, model, voice) {
+  if (length(model) != 1L || length(voice) != 1L || is.na(model) || is.na(voice) || !nzchar(model) || !nzchar(voice)) stop("Episode identity requires the exact narration model and voice.", call. = FALSE)
+  title <- podcast_clipping_title(clipping_path)
+  fields <- enc2utf8(c(title, as.character(model), as.character(voice)))
+  identity <- paste0(vapply(fields, function(field) paste0(nchar(field, type = "bytes"), ":", field), character(1)), collapse = "")
+  digest::digest(identity, algo = "sha256", serialize = FALSE)
+}
+
+podcast_eligibility_path <- function(clipping_path, state_dir = path.expand("~/.local/share/readcast/podcast-episodes")) {
+  title <- enc2utf8(podcast_clipping_title(clipping_path))
+  key <- digest::digest(title, algo = "sha256", serialize = FALSE)
+  file.path(state_dir, "eligibility", paste0(key, ".dcf"))
+}
+
+read_podcast_eligibility <- function(clipping_path, state_dir = path.expand("~/.local/share/readcast/podcast-episodes")) {
+  path <- podcast_eligibility_path(clipping_path, state_dir)
+  if (!file.exists(path)) return(NULL)
+  stored <- tryCatch(read.dcf(path), error = function(error) NULL)
+  if (is.null(stored) || !nrow(stored)) stop("Saved clipping eligibility is unreadable.", call. = FALSE)
+  as.list(stored[1L, , drop = TRUE])
+}
+
+save_podcast_eligibility <- function(clipping_path, eligible, state_dir = path.expand("~/.local/share/readcast/podcast-episodes")) {
+  path <- podcast_eligibility_path(clipping_path, state_dir)
+  dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+  temporary <- tempfile("eligibility-", tmpdir = dirname(path))
+  on.exit(unlink(temporary), add = TRUE)
+  write.dcf(data.frame(eligible = if (eligible) "true" else "false", clipping_title = podcast_clipping_title(clipping_path)), temporary)
+  if (!file.rename(temporary, path)) stop("Could not save clipping eligibility.", call. = FALSE)
+  invisible(path)
+}
+
+podcast_episode_path <- function(clipping_path, model, voice, state_dir = path.expand("~/.local/share/readcast/podcast-episodes")) {
+  file.path(state_dir, paste0(podcast_episode_id(clipping_path, model, voice), ".dcf"))
+}
+
+read_podcast_episode <- function(clipping_path, model, voice, state_dir = path.expand("~/.local/share/readcast/podcast-episodes")) {
+  path <- podcast_episode_path(clipping_path, model, voice, state_dir)
+  if (!file.exists(path)) return(NULL)
+  stored <- tryCatch(read.dcf(path), error = function(error) NULL)
+  if (is.null(stored) || !nrow(stored)) stop("Saved episode metadata is unreadable. Move it aside and confirm eligibility again.", call. = FALSE)
+  as.list(stored[1L, , drop = TRUE])
+}
+
+save_podcast_episode <- function(clipping_path, episode, state_dir = path.expand("~/.local/share/readcast/podcast-episodes")) {
+  allowed <- c("eligible", "guid", "title", "description", "audio_url", "audio_size", "audio_digest", "published", "publication_state", "model", "voice", "replacement_digest", "replacement_key", "replacement_old_url", "replacement_old_key")
+  if (any(!names(episode) %in% allowed)) stop("Unexpected podcast episode field.", call. = FALSE)
+  dir.create(state_dir, recursive = TRUE, showWarnings = FALSE)
+  path <- podcast_episode_path(clipping_path, episode$model, episode$voice, state_dir)
+  values <- as.data.frame(lapply(episode, function(value) as.character(value %||% "")), stringsAsFactors = FALSE)
+  temporary <- tempfile("episode-", tmpdir = state_dir)
+  on.exit(unlink(temporary), add = TRUE)
+  write.dcf(values, temporary)
+  if (!file.rename(temporary, path)) stop("Could not save episode metadata.", call. = FALSE)
+  invisible(episode)
+}
+
+confirm_podcast_eligibility <- function(clipping_path, eligible = NULL, title, description = "", model, voice,
+                                        state_dir = path.expand("~/.local/share/readcast/podcast-episodes")) {
+  prior <- read_podcast_episode(clipping_path, model, voice, state_dir)
+  if (!is.null(prior)) return(prior)
+  decision <- read_podcast_eligibility(clipping_path, state_dir)
+  if (is.null(decision)) {
+    if (length(eligible) != 1L || is.na(eligible)) stop("Confirm whether this clipping is eligible for podcast publication.", call. = FALSE)
+    save_podcast_eligibility(clipping_path, eligible, state_dir)
+  } else eligible <- identical(decision$eligible, "true")
+  if (!eligible) return(list(eligible = "false", model = model, voice = voice))
+  id <- podcast_episode_id(clipping_path, model, voice)
+  title <- trimws(title)
+  if (!nzchar(title)) stop("Enter an episode title before confirming eligibility.", call. = FALSE)
+  episode <- list(eligible = if (eligible) "true" else "false", guid = paste0("urn:readcast:clipping:", id),
+                  title = title, description = trimws(description), audio_url = "", audio_size = "",
+                  published = "", model = model, voice = voice)
+  save_podcast_episode(clipping_path, episode, state_dir)
+  episode
+}
+
+default_episode_title <- function(article_title, model, voice) {
+  readable_model <- tools::toTitleCase(gsub("[-_/]+", " ", model))
+  readable_voice <- gsub("[-_:]+", " ", voice)
+  paste0(trimws(article_title), " (", readable_model, " - ", trimws(readable_voice), ")")
+}
+
+podcast_episode_status <- function(episode) {
+  if (is.null(episode)) return("pending")
+  if (identical(episode$publication_state %||% "", "complete") ||
+      (is.null(episode$publication_state) && nzchar(episode$published %||% ""))) return("complete")
+  if (nzchar(episode$audio_url %||% "") && nzchar(episode$audio_size %||% "")) return("recoverable")
+  "pending"
+}
+
+podcast_retention_path <- function(state_dir) file.path(state_dir, "audio-retention.json")
+
+read_podcast_retention <- function(state_dir) {
+  path <- podcast_retention_path(state_dir)
+  if (!file.exists(path)) return(list())
+  tryCatch(jsonlite::fromJSON(path, simplifyVector = FALSE), error = function(error) stop("Saved audio retention ledger is unreadable.", call. = FALSE))
+}
+
+save_podcast_retention <- function(entries, state_dir) {
+  dir.create(state_dir, recursive = TRUE, showWarnings = FALSE)
+  path <- podcast_retention_path(state_dir)
+  temporary <- tempfile("retention-", tmpdir = state_dir)
+  on.exit(unlink(temporary), add = TRUE)
+  writeLines(jsonlite::toJSON(entries, auto_unbox = TRUE, pretty = TRUE), temporary, useBytes = TRUE)
+  if (!file.rename(temporary, path)) stop("Could not save audio retention ledger.", call. = FALSE)
+  invisible(path)
+}
+
+podcast_feed_audio_urls <- function(feed) {
+  if (is.null(feed)) return(character())
+  document <- xml2::read_xml(feed)
+  xml2::xml_attr(xml2::xml_find_all(document, "/rss/channel/item/enclosure"), "url")
+}
+
+cleanup_podcast_audio <- function(state_dir, feed, delete_audio, now = Sys.time(), retention_days = 30) {
+  if (is.null(feed) || !is.function(delete_audio)) stop("Cleanup requires the current readable feed and an audio deletion function.", call. = FALSE)
+  entries <- read_podcast_retention(state_dir)
+  referenced <- podcast_feed_audio_urls(feed)
+  eligible <- vapply(entries, function(entry) {
+    age <- as.numeric(difftime(now, as.POSIXct(entry$retired_at, tz = "UTC"), units = "days"))
+    is.finite(age) && age >= retention_days && !entry$url %in% referenced
+  }, logical(1))
+  deleted <- eligible & vapply(seq_along(entries), function(index) {
+    if (!eligible[[index]]) return(FALSE)
+    tryCatch({ delete_audio(entries[[index]]$key); TRUE }, error = function(error) FALSE)
+  }, logical(1))
+  if (any(deleted)) save_podcast_retention(entries[!deleted], state_dir)
+  list(deleted = vapply(entries[deleted], `[[`, character(1), "key"),
+       failed = vapply(entries[eligible & !deleted], `[[`, character(1), "key"))
+}
+
+cleanup_published_podcast_audio <- function(config_dir = path.expand("~/.config/readcast"),
+                                            data_dir = path.expand("~/.local/share/readcast/podcast-episodes"),
+                                            perform = httr2::req_perform, delete_audio = delete_r2_audio_object,
+                                            now = Sys.time()) {
+  settings <- readcast_setup_settings(config_dir)
+  feed_url <- paste0(sub("/$", "", settings$github_pages_url), "/feed.xml")
+  response <- httr2::request(feed_url) |>
+    httr2::req_method("GET") |>
+    httr2::req_timeout(30) |>
+    httr2::req_error(is_error = function(resp) FALSE) |>
+    perform()
+  status <- httr2::resp_status(response)
+  if (status < 200L || status >= 300L) stop("The public podcast feed is unavailable (HTTP ", status, "); refusing to delete audio.", call. = FALSE)
+  feed <- httr2::resp_body_string(response)
+  document <- tryCatch(xml2::read_xml(feed), error = function(error) NULL)
+  if (is.null(document) || !identical(xml2::xml_name(document), "rss") || inherits(xml2::xml_find_first(document, "/rss/channel"), "xml_missing")) {
+    stop("The public podcast feed is unreadable; refusing to delete audio.", call. = FALSE)
+  }
+  cleanup_podcast_audio(data_dir, feed,
+    delete_audio = function(key) delete_audio(key, config_dir = config_dir), now = now)
+}
+#+end_src
+
+* RSS feed and GitHub Pages content upload
+
+The repository feed is the publication source of truth. Each publication reads
+the existing feed and upserts the episode by its stable GUID, retaining other
+items and the channel metadata. A successful audio upload is recorded locally
+before Pages operations, so a retry can reuse the content-addressed object and
+finish a failed feed update without adding a second item.
+
+#+begin_src R
+xml_escape <- function(value) {
+  value <- as.character(value %||% "")
+  value <- gsub("&", "&amp;", value, fixed = TRUE)
+  value <- gsub("<", "&lt;", value, fixed = TRUE)
+  value <- gsub(">", "&gt;", value, fixed = TRUE)
+  value <- gsub("\"", "&quot;", value, fixed = TRUE)
+  gsub("'", "&apos;", value, fixed = TRUE)
+}
+
+build_podcast_feed <- function(episodes, pages_url, show_title = "Readcast", show_description = "A personal collection of narrated articles.", language = "en", explicit = "false", cover_url = NULL) {
+  explicit <- tolower(trimws(explicit))
+  if (!explicit %in% c("true", "false")) stop("Explicit content must be set to true or false.", call. = FALSE)
+  if (!nzchar(trimws(show_title)) || !nzchar(trimws(language))) stop("Podcast show title and language are required.", call. = FALSE)
+  episodes <- Filter(function(item) identical(item$eligible, "true") && nzchar(item$audio_url %||% ""), episodes)
+  if (!length(episodes)) stop("There are no published episodes to include in the feed.", call. = FALSE)
+  if (is.null(cover_url)) cover_url <- paste0(sub("/$", "", pages_url), "/cover.png")
+  items <- vapply(episodes, function(item) paste0(
+    "    <item>\n",
+    "      <title>", xml_escape(item$title), "</title>\n",
+    if (nzchar(item$description %||% "")) paste0("      <description>", xml_escape(item$description), "</description>\n") else "",
+    "      <guid isPermaLink=\"false\">", xml_escape(item$guid), "</guid>\n",
+    "      <pubDate>", xml_escape(item$published), "</pubDate>\n",
+    "      <enclosure url=\"", xml_escape(item$audio_url), "\" length=\"", xml_escape(item$audio_size), "\" type=\"audio/mpeg\" />\n",
+    "    </item>"), character(1))
+  paste0('<?xml version="1.0" encoding="UTF-8"?>\n',
+    '<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">\n  <channel>\n',
+    '    <title>', xml_escape(show_title), '</title>\n',
+    '    <link>', xml_escape(pages_url), '</link>\n',
+    '    <description>', xml_escape(show_description), '</description>\n',
+    '    <language>', xml_escape(language), '</language>\n',
+    '    <itunes:explicit>', xml_escape(explicit), '</itunes:explicit>\n',
+    '    <itunes:block>yes</itunes:block>\n',
+    '    <itunes:image href="', xml_escape(cover_url), '" />\n',
+    paste(items, collapse = "\n"), '\n  </channel>\n</rss>\n')
+}
+
+github_contents_request <- function(owner, repository, path, token, body = NULL, sha = NULL,
+                                    perform = httr2::req_perform) {
+  endpoint <- sprintf("https://api.github.com/repos/%s/%s/contents/%s", owner, repository, path)
+  request <- httr2::request(endpoint) |>
+    httr2::req_headers(Authorization = paste("Bearer", token), Accept = "application/vnd.github+json",
+                       `X-GitHub-Api-Version` = "2022-11-28", `User-Agent` = "Readcast podcast publisher") |>
+    httr2::req_timeout(30) |>
+    httr2::req_error(is_error = function(response) FALSE)
+  if (is.null(body)) return(perform(request))
+  payload <- c(list(message = paste("Publish Readcast", basename(path)), content = base64enc::base64encode(body, linewidth = 0L, newline = "")), if (!is.null(sha)) list(sha = sha))
+  request |> httr2::req_method("PUT") |> httr2::req_body_json(payload) |> perform()
+}
+
+publish_pages_file <- function(owner, repository, path, bytes, token, perform = httr2::req_perform, current = NULL) {
+  if (is.null(current)) current <- github_contents_request(owner, repository, path, token, perform = perform)
+  status <- httr2::resp_status(current)
+  sha <- if (status == 200L) httr2::resp_body_json(current, simplifyVector = TRUE)$sha else NULL
+  if (!status %in% c(200L, 404L)) stop("Could not inspect GitHub Pages file ", path, " (HTTP ", status, ").", call. = FALSE)
+  response <- github_contents_request(owner, repository, path, token, body = bytes, sha = sha, perform = perform)
+  status <- httr2::resp_status(response)
+  if (status < 200L || status >= 300L) stop("GitHub Pages rejected ", path, " (HTTP ", status, ").", call. = FALSE)
+  invisible(TRUE)
+}
+
+read_pages_feed <- function(owner, repository, token, perform = httr2::req_perform) {
+  response <- github_contents_request(owner, repository, "feed.xml", token, perform = perform)
+  status <- httr2::resp_status(response)
+  if (status == 404L) return(list(feed = NULL, response = response))
+  if (status != 200L) stop("Could not read the current GitHub Pages feed (HTTP ", status, ").", call. = FALSE)
+  payload <- httr2::resp_body_json(response, simplifyVector = TRUE)
+  content <- gsub("[[:space:]]", "", payload$content)
+  feed <- tryCatch(rawToChar(base64enc::base64decode(content)), error = function(error) NULL)
+  if (is.null(feed) || is.null(tryCatch(xml2::read_xml(feed), error = function(error) NULL))) stop("The existing published RSS feed is unreadable; refusing to replace it.", call. = FALSE)
+  list(feed = feed, response = response)
+}
+
+upsert_podcast_feed <- function(existing_feed, episodes, pages_url, show_title, show_description, language, explicit, cover_url) {
+  if (is.null(existing_feed)) return(build_podcast_feed(episodes, pages_url, show_title, show_description, language, explicit, cover_url))
+  document <- xml2::read_xml(existing_feed)
+  channel <- xml2::xml_find_first(document, "/rss/channel")
+  if (inherits(channel, "xml_missing")) stop("The existing published RSS feed has no channel; refusing to replace it.", call. = FALSE)
+  for (episode in episodes) {
+    if (!identical(episode$eligible, "true") || !nzchar(episode$audio_url %||% "")) next
+    items <- xml2::xml_find_all(channel, "./item")
+    current <- items[vapply(items, function(item) identical(xml2::xml_text(xml2::xml_find_first(item, "./guid")), episode$guid), logical(1))]
+    if (length(current)) xml2::xml_remove(current)
+    one <- build_podcast_feed(list(episode), pages_url, show_title, show_description, language, explicit, cover_url)
+    item <- xml2::xml_find_first(xml2::read_xml(one), "/rss/channel/item")
+    xml2::xml_add_child(channel, item)
+  }
+  as.character(document)
+}
+
+podcast_feed_cover_url <- function(feed, fallback) {
+  if (is.null(feed)) return(fallback)
+  document <- xml2::read_xml(feed)
+  image <- xml2::xml_find_first(document, "/rss/channel/*[local-name()='image' and namespace-uri()='http://www.itunes.com/dtds/podcast-1.0.dtd']")
+  value <- xml2::xml_attr(image, "href")
+  if (inherits(image, "xml_missing") || is.na(value) || !nzchar(value)) fallback else value
+}
+
+podcast_feed_candidates <- function(saved_episodes, current_episode, remote_feed_exists) {
+  if (isTRUE(remote_feed_exists)) return(list(current_episode))
+  previously_complete <- Filter(function(item) identical(podcast_episode_status(item), "complete"), saved_episodes)
+  current <- vapply(previously_complete, function(item) identical(item$guid, current_episode$guid), logical(1))
+  if (any(current)) previously_complete[[which(current)[1L]]] <- current_episode else previously_complete <- c(previously_complete, list(current_episode))
+  previously_complete
+}
+
+with_pages_visibility_retry <- function(check, perform, timeout = 120) {
+  # Injected performers are used by callers and tests to model one request.
+  # Keep that path synchronous; only real HTTP calls wait for Pages propagation.
+  if (!identical(perform, httr2::req_perform)) return(check())
+  started <- Sys.time()
+  delay <- 2
+  repeat {
+    result <- tryCatch(list(value = check()), error = function(error) list(error = error))
+    if (is.null(result$error)) return(result$value)
+    message <- conditionMessage(result$error)
+    retryable <- grepl("HTTP (404|408|429|5[0-9][0-9])", message) ||
+      grepl("does not contain the expected episode GUID", message, fixed = TRUE) ||
+      grepl("did not return a valid RSS 2.0 feed", message, fixed = TRUE) ||
+      grepl("does not match the hosted audio", message, fixed = TRUE) ||
+      grepl("does not reference the approved cover", message, fixed = TRUE) ||
+      grepl("Public resource has unexpected content type", message, fixed = TRUE) ||
+      grepl("Public resource has unexpected byte length", message, fixed = TRUE)
+    remaining <- timeout - as.numeric(difftime(Sys.time(), started, units = "secs"))
+    if (!retryable || remaining <= 0) stop(result$error)
+    Sys.sleep(min(delay, remaining))
+    delay <- min(delay * 2, 10)
+  }
+}
+
+verify_public_resource <- function(url, expected_type = NULL, expected_length = NULL, perform = httr2::req_perform) {
+  response <- httr2::request(url) |>
+    httr2::req_method("HEAD") |>
+    httr2::req_timeout(30) |>
+    httr2::req_error(is_error = function(response) FALSE) |>
+    perform()
+  status <- httr2::resp_status(response)
+  if (status < 200L || status >= 300L) stop("Public resource is not reachable yet (HTTP ", status, "): ", url, call. = FALSE)
+  if (!is.null(expected_type)) {
+    content_type <- httr2::resp_header(response, "content-type", default = "")
+    media_type <- tolower(trimws(strsplit(content_type, ";", fixed = TRUE)[[1L]][[1L]]))
+    if (!identical(media_type, tolower(expected_type))) stop("Public resource has unexpected content type at ", url, ".", call. = FALSE)
+  }
+  if (!is.null(expected_length)) {
+    content_length <- httr2::resp_header(response, "content-length", default = "")
+    if (!identical(content_length, as.character(expected_length))) stop("Public resource has unexpected byte length at ", url, ".", call. = FALSE)
+  }
+  invisible(TRUE)
+}
+
+verify_live_podcast_feed <- function(url, episode, cover_url, perform = httr2::req_perform) {
+  response <- httr2::request(url) |>
+    httr2::req_method("GET") |>
+    httr2::req_timeout(30) |>
+    httr2::req_error(is_error = function(response) FALSE) |>
+    perform()
+  status <- httr2::resp_status(response)
+  if (status < 200L || status >= 300L) stop("Published RSS feed is not reachable yet (HTTP ", status, "): ", url, call. = FALSE)
+  feed <- tryCatch(xml2::read_xml(httr2::resp_body_string(response)), error = function(error) NULL)
+  if (is.null(feed) || !identical(xml2::xml_attr(feed, "version"), "2.0")) stop("Published URL did not return a valid RSS 2.0 feed.", call. = FALSE)
+  channel <- xml2::xml_find_first(feed, "/rss/channel")
+  items <- xml2::xml_find_all(channel, "./item")
+  matching <- items[vapply(items, function(item) identical(xml2::xml_text(xml2::xml_find_first(item, "./guid")), episode$guid), logical(1))]
+  if (!length(matching)) stop("Published RSS feed does not contain the expected episode GUID.", call. = FALSE)
+  enclosure <- xml2::xml_find_first(matching[[1L]], "./enclosure")
+  if (!identical(xml2::xml_attr(enclosure, "url"), episode$audio_url) ||
+      !identical(xml2::xml_attr(enclosure, "length"), as.character(episode$audio_size)) ||
+      !identical(xml2::xml_attr(enclosure, "type"), "audio/mpeg")) stop("Published RSS enclosure does not match the hosted audio.", call. = FALSE)
+  cover <- xml2::xml_find_first(channel, "./*[local-name()='image' and namespace-uri()='http://www.itunes.com/dtds/podcast-1.0.dtd']")
+  if (!identical(xml2::xml_attr(cover, "href"), cover_url)) stop("Published RSS feed does not reference the approved cover.", call. = FALSE)
+  invisible(TRUE)
+}
+
+publish_podcast_episode <- function(clipping_path, mp3_path, approved_cover, episode, config_dir = path.expand("~/.config/readcast"),
+                                    data_dir = path.expand("~/.local/share/readcast/podcast-episodes"),
+                                    audio_uploader = upload_cached_audio, perform = httr2::req_perform,
+                                    on_progress = function(message) invisible(NULL)) {
+  if (!identical(episode$eligible, "true")) stop("Confirm this clipping is eligible before publishing.", call. = FALSE)
+  if (!file.exists(mp3_path) || dir.exists(mp3_path) || file.info(mp3_path)$size <= 0) stop("Select an existing cached MP3 before publishing.", call. = FALSE)
+  if (!file.exists(approved_cover)) stop("Approve a podcast cover before publishing.", call. = FALSE)
+  validate_cover_image(approved_cover)
+  settings <- readcast_setup_settings(config_dir)
+  pages_url <- sub("/$", "", settings$github_pages_url)
+  repository <- github_repository_from_pages_url(settings$github_pages_url)
+  token <- Sys.getenv("GITHUB_TOKEN", unset = "")
+  if (!nzchar(token)) stop("Set GITHUB_TOKEN in your environment with contents write access to the Pages repository.", call. = FALSE)
+  audio_digest <- digest::digest(file = mp3_path, algo = "sha256", serialize = FALSE)
+  if (identical(episode$audio_digest %||% "", audio_digest) && nzchar(episode$audio_url %||% "") && nzchar(episode$audio_size %||% "") &&
+      (episode$publication_state %||% "") %in% c("recoverable", "replacement-uploaded")) {
+    on_progress("Using the audio upload already saved")
+    uploaded <- list(url = episode$audio_url, size = as.numeric(episode$audio_size))
+  } else {
+    if (!identical(episode$replacement_digest %||% "", audio_digest) || !nzchar(episode$replacement_key %||% "")) {
+      episode$replacement_digest <- audio_digest
+      episode$replacement_key <- paste0("audio/replacement-", substr(audio_digest, 1L, 20L), "-", gsub("[^A-Za-z0-9]", "", basename(tempfile())), ".mp3")
+      episode$replacement_old_url <- episode$audio_url %||% ""
+      episode$replacement_old_key <- if (nzchar(episode$replacement_old_url)) sub("^[^:]+://[^/]+/", "", episode$replacement_old_url) else ""
+      save_podcast_episode(clipping_path, episode, data_dir)
+    }
+    on_progress("Uploading the MP3")
+    uploaded <- audio_uploader(mp3_path, config_dir = config_dir, object_key = episode$replacement_key)
+    episode$audio_url <- uploaded$url
+    episode$audio_size <- as.character(uploaded$size)
+    episode$audio_digest <- audio_digest
+    episode$publication_state <- "replacement-uploaded"
+    save_podcast_episode(clipping_path, episode, data_dir)
+  }
+  if (!nzchar(episode$published %||% "")) {
+    now <- as.POSIXlt(Sys.time(), tz = "GMT")
+    weekdays <- c("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
+    months <- c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+    episode$published <- sprintf("%s, %02d %s %04d %02d:%02d:%02d GMT", weekdays[[now$wday + 1L]], now$mday,
+      months[[now$mon + 1L]], now$year + 1900L, now$hour, now$min, floor(now$sec))
+  }
+  # Record the successful upload before any later Pages or verification call can fail.
+  episode$publication_state <- "recoverable"
+  save_podcast_episode(clipping_path, episode, data_dir)
+  on_progress("Checking the uploaded MP3")
+  verify_public_resource(uploaded$url, expected_type = "audio/mpeg", expected_length = uploaded$size, perform = perform)
+  cover_path <- "cover.png"
+  on_progress("Uploading podcast artwork")
+  publish_pages_file(repository$owner, repository$repository, cover_path, readBin(approved_cover, "raw", n = file.info(approved_cover)$size), token, perform)
+  cover_url <- paste0(pages_url, "/", cover_path)
+  cover_size <- file.info(approved_cover)$size
+  on_progress("Waiting for artwork to become available")
+  with_pages_visibility_retry(function() verify_public_resource(cover_url, expected_type = "image/png", expected_length = cover_size, perform = perform), perform)
+  episodes <- list.files(data_dir, pattern = "\\.dcf$", full.names = TRUE)
+  saved <- lapply(episodes, function(path) as.list(read.dcf(path)[1L, , drop = TRUE]))
+  same <- vapply(saved, function(item) identical(item$guid, episode$guid), logical(1))
+  if (any(same)) saved[[which(same)[1L]]] <- episode else saved <- c(saved, list(episode))
+  on_progress("Reading the current podcast feed")
+  feed_current <- read_pages_feed(repository$owner, repository$repository, token, perform)
+  feed_episodes <- podcast_feed_candidates(saved, episode, !is.null(feed_current$feed))
+  published_cover_url <- podcast_feed_cover_url(feed_current$feed, cover_url)
+  feed <- upsert_podcast_feed(feed_current$feed, feed_episodes, pages_url, show_title = settings$podcast_title,
+    show_description = settings$podcast_description, language = settings$podcast_language,
+    explicit = settings$podcast_explicit, cover_url = cover_url)
+  on_progress("Updating the podcast feed")
+  publish_pages_file(repository$owner, repository$repository, "feed.xml", charToRaw(feed), token, perform, current = feed_current$response)
+  feed_url <- paste0(pages_url, "/feed.xml")
+  on_progress("Waiting for the published episode to appear")
+  with_pages_visibility_retry(function() verify_live_podcast_feed(feed_url, episode, published_cover_url, perform), perform)
+  if (nzchar(episode$replacement_old_url %||% "") && !identical(episode$replacement_old_url, episode$audio_url)) {
+    entries <- read_podcast_retention(data_dir)
+    already_retired <- any(vapply(entries, function(entry) identical(entry$url, episode$replacement_old_url), logical(1)))
+    if (!already_retired) entries <- c(entries, list(list(url = episode$replacement_old_url, key = episode$replacement_old_key,
+      retired_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"))))
+    save_podcast_retention(entries, data_dir)
+  }
+  episode$publication_state <- "complete"
+  episode$replacement_digest <- ""
+  episode$replacement_key <- ""
+  episode$replacement_old_url <- ""
+  episode$replacement_old_key <- ""
+  save_podcast_episode(clipping_path, episode, data_dir)
+  on_progress("Publication complete")
+  list(feed_url = feed_url, audio_url = uploaded$url, title = episode$title)
+}
+#+end_src

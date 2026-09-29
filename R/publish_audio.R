@@ -1,0 +1,81 @@
+readcast_worker_url <- function(config_dir = path.expand("~/.config/readcast")) {
+  settings <- if (exists("readcast_setup_settings", mode = "function")) readcast_setup_settings(config_dir) else list(worker_url = "", hosted_worker_url = "")
+  worker_url <- trimws(settings$worker_url)
+  if (!nzchar(worker_url)) stop("Set worker_url in ~/.config/readcast/config.yml to the permanent https://<worker>.<account>.workers.dev address.", call. = FALSE)
+  parsed <- httr2::url_parse(worker_url)
+  if (!identical(parsed$scheme, "https") || !grepl("^[a-z0-9-]+\\.[a-z0-9-]+\\.workers\\.dev$", parsed$hostname)) {
+    stop("worker_url in config.yml must be an HTTPS workers.dev hostname, without a path.", call. = FALSE)
+  }
+  if (!is.null(parsed$path) && nzchar(parsed$path) && parsed$path != "/") stop("worker_url in config.yml must contain only the Worker origin.", call. = FALSE)
+  dir.create(config_dir, recursive = TRUE, showWarnings = FALSE)
+  legacy_lock_path <- file.path(config_dir, "worker-url")
+  locked <- settings$hosted_worker_url
+  if (!nzchar(locked) && file.exists(legacy_lock_path)) locked <- trimws(readLines(legacy_lock_path, warn = FALSE, n = 1L))
+  if (nzchar(locked) && !identical(sub("/$", "", worker_url), sub("/$", "", locked))) {
+    stop("worker_url differs from the address already used for hosted audio (", locked, "). Restore that Worker address; published audio URLs depend on it.", call. = FALSE)
+  }
+  list(url = sub("/$", "", worker_url), config_dir = config_dir,
+       legacy_lock_path = if (file.exists(legacy_lock_path)) legacy_lock_path else NULL)
+}
+
+upload_cached_audio <- function(mp3_path, config_dir = path.expand("~/.config/readcast"), object_key = NULL) {
+  hosting <- readcast_worker_url(config_dir)
+  settings <- if (exists("readcast_setup_settings", mode = "function")) readcast_setup_settings(config_dir) else list(r2_account_id = "", r2_bucket = "")
+  account_id <- settings$r2_account_id
+  bucket <- settings$r2_bucket
+  access_key <- Sys.getenv("R2_ACCESS_KEY_ID", unset = "")
+  secret_key <- Sys.getenv("R2_SECRET_ACCESS_KEY", unset = "")
+  missing <- c(if (!nzchar(account_id)) "R2_ACCOUNT_ID", if (!nzchar(bucket)) "R2_BUCKET",
+               if (!nzchar(access_key)) "R2_ACCESS_KEY_ID", if (!nzchar(secret_key)) "R2_SECRET_ACCESS_KEY")
+  if (length(missing)) stop("Set the missing R2 environment variable(s): ", paste(missing, collapse = ", "), ". Create an R2 API token with Object Read & Write access.", call. = FALSE)
+  if (length(mp3_path) != 1L || !file.exists(mp3_path) || dir.exists(mp3_path)) stop("Select an existing cached MP3 before uploading.", call. = FALSE)
+  if (file.info(mp3_path)$size <= 0) stop("The selected cached MP3 is empty.", call. = FALSE)
+  digest <- digest::digest(file = mp3_path, algo = "sha256", serialize = FALSE)
+  if (is.null(object_key)) object_key <- paste0("audio/", digest, ".mp3")
+  if (length(object_key) != 1L || is.na(object_key) || !grepl("^audio/[A-Za-z0-9_-]+[.]mp3$", object_key)) stop("Audio object key must be a safe audio/*.mp3 key.", call. = FALSE)
+  key <- object_key
+  endpoint <- sprintf("https://%s.r2.cloudflarestorage.com/%s/%s", account_id, utils::URLencode(bucket, reserved = TRUE), key)
+  result <- tryCatch({
+    response <- curl::curl_upload(
+      mp3_path, endpoint, verbose = FALSE,
+      aws_sigv4 = "aws:amz:auto:s3",
+      userpwd = paste0(access_key, ":", secret_key),
+      httpheader = c("Content-Type: audio/mpeg", "x-amz-storage-class: STANDARD",
+                     "x-amz-content-sha256: UNSIGNED-PAYLOAD"),
+      timeout = 300
+    )
+    if (response$status_code < 200L || response$status_code >= 300L) {
+      stop("R2 rejected the upload (HTTP ", response$status_code, "). Check the account ID, bucket name, token permissions and R2 subscription.", call. = FALSE)
+    }
+    invisible(response)
+  }, error = function(error) {
+    if (grepl("R2 rejected", conditionMessage(error), fixed = TRUE)) stop(error)
+    stop("Could not upload audio to R2: ", conditionMessage(error), ". Check your network and R2 credentials, then retry.", call. = FALSE)
+  })
+  save_readcast_setup_settings(list(hosted_worker_url = hosting$url), hosting$config_dir)
+  if (!is.null(hosting$legacy_lock_path)) unlink(hosting$legacy_lock_path)
+  list(url = paste0(hosting$url, "/", key), key = key, size = file.info(mp3_path)$size)
+}
+
+delete_r2_audio_object <- function(object_key, config_dir = path.expand("~/.config/readcast"), perform = NULL) {
+  if (length(object_key) != 1L || is.na(object_key) || !grepl("^audio/[A-Za-z0-9_-]+[.]mp3$", object_key)) stop("Refusing to delete an invalid audio object key.", call. = FALSE)
+  settings <- if (exists("readcast_setup_settings", mode = "function")) readcast_setup_settings(config_dir) else list(r2_account_id = "", r2_bucket = "")
+  account_id <- settings$r2_account_id
+  bucket <- settings$r2_bucket
+  access_key <- Sys.getenv("R2_ACCESS_KEY_ID", unset = "")
+  secret_key <- Sys.getenv("R2_SECRET_ACCESS_KEY", unset = "")
+  missing <- c(if (!nzchar(account_id)) "R2_ACCOUNT_ID", if (!nzchar(bucket)) "R2_BUCKET",
+               if (!nzchar(access_key)) "R2_ACCESS_KEY_ID", if (!nzchar(secret_key)) "R2_SECRET_ACCESS_KEY")
+  if (length(missing)) stop("Set the missing R2 environment variable(s): ", paste(missing, collapse = ", "), ". Create an R2 API token with Object Read & Write access.", call. = FALSE)
+  endpoint <- sprintf("https://%s.r2.cloudflarestorage.com/%s/%s", account_id, utils::URLencode(bucket, reserved = TRUE), object_key)
+  response <- if (is.null(perform)) {
+    readcast_r2_fetch(endpoint, "DELETE", access_key, secret_key, timeout = 30)
+  } else {
+    request <- httr2::request(endpoint) |> httr2::req_method("DELETE")
+    perform(request)
+  }
+  if (httr2::resp_status(response) < 200L || httr2::resp_status(response) >= 300L) {
+    stop("R2 rejected audio deletion (HTTP ", httr2::resp_status(response), "). The retention entry remains available to retry.", call. = FALSE)
+  }
+  invisible(TRUE)
+}
