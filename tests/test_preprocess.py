@@ -1,5 +1,6 @@
 """Speech cleanup examples carried forward from the R tests."""
 
+from readcast.narration import split_article
 from readcast.preprocess import preprocess_markdown
 
 
@@ -56,3 +57,21 @@ It’s rare—really rare…
     _, script = preprocess_markdown(markdown)
     assert "You are reading a story." in script
     assert "It's rare, really rare." in script
+
+
+def test_indented_blank_lines_do_not_become_empty_narration_chunks():
+    indent = " " * 20
+    markdown = f"""---
+title: A story
+---
+
+First paragraph.
+
+{indent}
+{indent}
+
+Second paragraph.
+"""
+    _, script = preprocess_markdown(markdown)
+    chunks = split_article(script)
+    assert all(chunk.strip() for chunk in chunks)

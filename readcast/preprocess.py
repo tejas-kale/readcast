@@ -203,6 +203,7 @@ def preprocess_markdown(markdown: str) -> tuple[dict, str]:
     text = spoken_preamble(metadata, body)
     for step in (replace_code_fences, remove_images_and_chrome, speak_markdown_structure, normalise_typography, speak_numbers):
         text = step(text)
+    text = re.sub(r"(?m)^[ \t]+(?=\n|$)", "", text)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
     if not text:
         raise ValueError("Preparation produced no spoken text")
