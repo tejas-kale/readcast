@@ -33,7 +33,10 @@ def _need(config: dict, key: str) -> str:
 
 def _http(url: str, method: str = "GET", *, headers: dict | None = None,
           data: bytes | None = None, timeout: int = 30) -> tuple[int, dict, bytes]:
-    request = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
+    request_headers = {"User-Agent": "Readcast/0.1"}
+    if headers:
+        request_headers.update(headers)
+    request = urllib.request.Request(url, data=data, headers=request_headers, method=method)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return response.status, dict(response.headers.items()), response.read()

@@ -26,6 +26,29 @@ def test_feed_upsert_preserves_legacy_item_and_replaces_guid():
     assert current.find("enclosure").get("url") == state["audio_url"]
 
 
+def test_public_verification_identifies_readcast_to_worker(monkeypatch):
+    class Response:
+        headers = {"Content-Type": "audio/mpeg", "Content-Length": "3"}
+
+        def __init__(self, status):
+            self.status = status
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        def read(self):
+            return b""
+
+    def fake_urlopen(request, timeout):
+        return Response(200 if request.get_header("User-agent") == "Readcast/0.1" else 403)
+
+    monkeypatch.setattr(publishing.urllib.request, "urlopen", fake_urlopen)
+    publishing._verify("https://example.workers.dev/audio/episode.mp3", "audio/mpeg", 3)
+
+
 def test_publish_does_not_mark_complete_when_feed_verification_fails(tmp_path: Path, monkeypatch):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
