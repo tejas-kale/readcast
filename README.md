@@ -70,7 +70,7 @@ data_dir: ~/.local/share/readcast
 
 ## Set up publishing with the CLI
 
-Publishing is optional. These commands create a dedicated public GitHub Pages repository and a private Cloudflare R2 bucket served by the bundled Worker. Run them from this checkout. You need `gh`, Node.js/npm, `curl`, and `jq`. Cloudflare requires an account with R2 enabled; Wrangler's login opens a browser. The R2 API token command below also needs a one-time bootstrap token from the [Cloudflare dashboard](https://developers.cloudflare.com/fundamentals/api/how-to/create-via-api/) with **Account API Tokens Write** permission. Keep all tokens out of this repository and `config.yml`.
+Publishing is optional. These commands create a dedicated public GitHub Pages repository and a private Cloudflare R2 bucket served by the bundled Worker. Run them from this checkout. You need `gh`, Node.js/npm, `curl`, and `jq`. Before running Wrangler, activate R2 for your account in the [Cloudflare dashboard](https://developers.cloudflare.com/r2/get-started/): **Storage & databases → R2 → Overview → complete checkout**. Cloudflare does not document a Wrangler command for the initial R2 subscription; subsequent bucket and Worker setup uses the CLI. Wrangler's login opens a browser. The R2 API token command below also needs a one-time bootstrap token from the [Cloudflare dashboard](https://developers.cloudflare.com/fundamentals/api/how-to/create-via-api/) with **Account API Tokens Write** permission. Keep all tokens out of this repository and `config.yml`.
 
 ### Cloudflare: bucket, Worker, and R2 credentials
 
