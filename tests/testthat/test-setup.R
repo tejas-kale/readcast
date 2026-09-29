@@ -95,6 +95,35 @@ testthat::test_that("connection checks fail before network access when configura
   testthat::expect_match(result$message, "OPENROUTER_API_KEY")
 })
 
+testthat::test_that("TTS discovery loads supported voices with the speech model catalogue", {
+  request_seen <- NULL
+  payload <- list(data = list(
+    list(id = "provider/model-one", name = "Model One", supported_voices = c("Voice A", "Voice B")),
+    list(id = "provider/model-two", name = "Model Two", supported_voices = c("Voice C")),
+    list(id = "provider/model-without-list", name = "Model Without List", supported_voices = NULL)
+  ))
+  perform <- function(request) {
+    request_seen <<- request
+    httr2::response(status_code = 200, url = request$url,
+      headers = list(`content-type` = "application/json"),
+      body = charToRaw(as.character(jsonlite::toJSON(payload, auto_unbox = TRUE))))
+  }
+
+  catalogue <- discover_tts_catalogue(perform)
+
+  testthat::expect_match(request_seen$url, "output_modalities=speech")
+  testthat::expect_identical(catalogue$models, c("Model One" = "provider/model-one", "Model Two" = "provider/model-two", "Model Without List" = "provider/model-without-list"))
+  testthat::expect_identical(catalogue$voices[["provider/model-one"]], c("Voice A" = "Voice A", "Voice B" = "Voice B"))
+  testthat::expect_identical(catalogue$voices[["provider/model-two"]], c("Voice C" = "Voice C"))
+  testthat::expect_length(catalogue$voices[["provider/model-without-list"]], 0L)
+  testthat::expect_identical(tts_voice_choices(catalogue$voices, "provider/model-one"), catalogue$voices[["provider/model-one"]])
+  testthat::expect_identical(tts_voice_choices(catalogue$voices, "provider/model-two"), catalogue$voices[["provider/model-two"]])
+  testthat::expect_identical(tts_voice_choices(catalogue$voices, "provider/model-one", "Custom Voice"),
+    c("Voice A" = "Voice A", "Voice B" = "Voice B", "Custom Voice" = "Custom Voice"))
+  testthat::expect_identical(tts_voice_choices(catalogue$voices, "provider/unknown", "Saved Voice"),
+    c("Saved Voice" = "Saved Voice"))
+})
+
 testthat::test_that("connection check URLs are restricted to expected public origins", {
   testthat::expect_error(check_readcast_github_pages("http://reader.github.io"), "Use HTTPS")
   testthat::expect_error(check_readcast_github_pages("https://example.com"), "ending in github.io")

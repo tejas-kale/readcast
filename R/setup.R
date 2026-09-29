@@ -115,6 +115,36 @@ check_readcast_openrouter <- function(api_key = Sys.getenv("OPENROUTER_API_KEY",
   list(ok = TRUE, message = "Connected to OpenRouter. No narration was generated.")
 }
 
+discover_tts_catalogue <- function(perform = httr2::req_perform) {
+  fallback <- c("Microsoft MAI Voice 2 Flash" = "microsoft/mai-voice-2-flash",
+                "Microsoft MAI Voice 2" = "microsoft/mai-voice-2",
+                "OpenAI GPT-4o mini TTS" = "openai/gpt-4o-mini-tts-2025-12-15")
+  tryCatch({
+    response <- httr2::request("https://openrouter.ai/api/v1/models") |>
+      httr2::req_url_query(output_modalities = "speech") |>
+      httr2::req_timeout(10) |>
+      perform()
+    models <- httr2::resp_body_json(response, simplifyVector = FALSE)$data
+    if (!length(models)) return(list(models = fallback, voices = list()))
+    ids <- vapply(models, function(model) model$id, character(1))
+    labels <- vapply(models, function(model) model$name %||% model$id, character(1))
+    voice_catalogue <- lapply(models, function(model) {
+      voices <- unlist(model$supported_voices %||% character(), use.names = FALSE)
+      voices <- unique(as.character(voices[!is.na(voices) & nzchar(voices)]))
+      stats::setNames(voices, voices)
+    })
+    names(voice_catalogue) <- ids
+    list(models = stats::setNames(ids, make.unique(labels)), voices = voice_catalogue)
+  }, error = function(error) list(models = fallback, voices = list()))
+}
+
+tts_voice_choices <- function(voice_catalogue, model, current = NULL) {
+  voices <- voice_catalogue[[model]] %||% character()
+  current <- trimws(as.character(current %||% "")[[1L]])
+  if (!is.na(current) && nzchar(current) && !current %in% voices) voices <- c(voices, stats::setNames(current, current))
+  voices
+}
+
 # Keep credential-bearing R2 requests inside a local libcurl handle. httr2
 # retains performed requests in last_request(), including their curl options.
 readcast_r2_fetch <- function(url, method, access_key, secret_key, timeout = 15) {

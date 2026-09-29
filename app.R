@@ -30,23 +30,6 @@ list_clippings <- function(directory) {
   stats::setNames(sort(paths), sort(paths))
 }
 
-discover_tts_models <- function() {
-  fallback <- c("Microsoft MAI Voice 2 Flash" = "microsoft/mai-voice-2-flash",
-                "Microsoft MAI Voice 2" = "microsoft/mai-voice-2",
-                "OpenAI GPT-4o mini TTS" = "openai/gpt-4o-mini-tts-2025-12-15")
-  tryCatch({
-    response <- httr2::request("https://openrouter.ai/api/v1/models") |>
-      httr2::req_url_query(output_modalities = "speech") |>
-      httr2::req_timeout(10) |>
-      httr2::req_perform()
-    models <- httr2::resp_body_json(response, simplifyVector = FALSE)$data
-    if (length(models) == 0L) return(fallback)
-    ids <- vapply(models, function(model) model$id, character(1))
-    labels <- vapply(models, function(model) model$name %||% model$id, character(1))
-    stats::setNames(ids, make.unique(labels))
-  }, error = function(error) fallback)
-}
-
 `%||%` <- function(value, fallback) if (is.null(value) || length(value) == 0L) fallback else value
 
 default_voice <- function(model) {
@@ -267,8 +250,9 @@ ui <- shiny::fluidPage(
       shiny::selectizeInput("article", "Article", choices = NULL, options = list(placeholder = "Search clippings…", maxOptions = 50, openOnFocus = TRUE)),
       shiny::tags$div(class = "eyebrow", "Narration"),
       shiny::selectInput("model", "OpenRouter model", choices = NULL),
-      shiny::textInput("voice", "Voice", value = ""),
-      shiny::tags$p(class = "help-text", "Voices depend on the model. A default is filled in when known; otherwise enter a voice from the model’s page."),
+      shiny::selectizeInput("voice", "Voice", choices = NULL,
+        options = list(create = TRUE, persist = FALSE, maxOptions = 100)),
+      shiny::tags$p(class = "help-text", "Choose a supported voice for this model, or type a voice ID if the model does not publish its list."),
       shiny::tags$div(class = "eyebrow", "Podcast episode"),
       shiny::textInput("episode_title", "Episode title", value = ""),
       shiny::tags$div(class = "primary-actions",
@@ -292,7 +276,8 @@ ui <- shiny::fluidPage(
 server <- function(input, output, session) {
   active_clippings_dir <- shiny::reactiveVal(clippings_dir)
   clippings <- if (nzchar(clippings_dir)) list_clippings(clippings_dir) else character()
-  models <- discover_tts_models()
+  tts_catalogue <- discover_tts_catalogue()
+  models <- tts_catalogue$models
   recovery <- if (nzchar(clippings_dir)) latest_recoverable_episode(clippings, clippings_dir, podcast_state_dir, module_dir, cache_dir) else NULL
   if (!is.null(recovery) && !recovery$model %in% models) models <- c(models, stats::setNames(recovery$model, recovery$model))
   preserve_recovery_voice <- shiny::reactiveVal(!is.null(recovery))
@@ -310,14 +295,20 @@ server <- function(input, output, session) {
   shiny::updateSelectizeInput(session, "article", choices = clippings, selected = if (is.null(recovery)) character(0) else recovery$article, server = TRUE)
   initial_model <- if (!is.null(recovery)) recovery$model else if ("microsoft/mai-voice-2-flash" %in% models) "microsoft/mai-voice-2-flash" else unname(models[[1]])
   shiny::updateSelectInput(session, "model", choices = models, selected = initial_model)
-  if (!is.null(recovery)) shiny::updateTextInput(session, "voice", value = recovery$voice)
+  initial_voice <- if (!is.null(recovery)) recovery$voice else default_voice(initial_model)
+  shiny::updateSelectizeInput(session, "voice",
+    choices = tts_voice_choices(tts_catalogue$voices, initial_model, initial_voice),
+    selected = initial_voice, server = TRUE)
 
   shiny::observeEvent(input$model, {
     if (isTRUE(preserve_recovery_voice()) && !is.null(recovery) && identical(input$model, recovery$model)) {
       preserve_recovery_voice(FALSE)
       return()
     }
-    shiny::updateTextInput(session, "voice", value = default_voice(input$model))
+    voice <- default_voice(input$model)
+    shiny::updateSelectizeInput(session, "voice",
+      choices = tts_voice_choices(tts_catalogue$voices, input$model, voice),
+      selected = voice, server = TRUE)
   })
 
   selected_path <- shiny::reactive({
