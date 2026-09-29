@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sys
 
 import click
 
@@ -97,14 +98,34 @@ def main(ctx: click.Context, config_dir: Path):
     ctx.obj["config_dir"] = config_dir.expanduser()
 
 
+def _read_markdown_input(reference: str | None, source_id: str | None) -> bytes | None:
+    stream = getattr(sys.stdin, "buffer", sys.stdin)
+    if reference == "-":
+        contents = stream.read()
+        return contents.encode("utf-8") if isinstance(contents, str) else contents
+    if reference is None:
+        if sys.stdin.isatty():
+            raise ValueError("Provide a Markdown file or pipe Markdown on stdin")
+        contents = stream.read()
+        return contents.encode("utf-8") if isinstance(contents, str) else contents
+    if source_id:
+        raise ValueError("--source-id is only available when reading Markdown from stdin")
+    return None
+
+
 @main.command()
-@click.argument("reference")
+@click.argument("reference", required=False)
+@click.option("--source-id", help="Stable identity for Markdown read from stdin")
 @click.pass_context
-def prepare(ctx: click.Context, reference: str):
+def prepare(ctx: click.Context, reference: str | None, source_id: str | None):
     """Prepare a Markdown file or refresh an existing episode."""
     try:
         click.echo("Preparing Markdown", err=True)
-        _, state = prepare_workspace(_config(ctx), reference)
+        markdown = _read_markdown_input(reference, source_id)
+        if markdown is not None:
+            _, state = prepare_workspace(_config(ctx), raw_input=markdown, source_id=source_id)
+        else:
+            _, state = prepare_workspace(_config(ctx), reference)
         click.echo(state["id"])
     except (ValueError, OSError) as error:
         raise click.ClickException(str(error)) from error
@@ -153,26 +174,36 @@ def publish(ctx: click.Context, reference: str, replace: bool):
 
 
 @main.command()
-@click.argument("reference")
+@click.argument("reference", required=False)
+@click.option("--source-id", help="Stable identity for Markdown read from stdin")
 @click.option("--model", help="OpenRouter speech model for this run")
 @click.option("--voice", help="Voice for this run")
 @click.option("--replace", is_flag=True, help="Update an existing published RSS item")
 @click.pass_context
-def run(ctx: click.Context, reference: str, model: str | None, voice: str | None, replace: bool):
+def run(ctx: click.Context, reference: str | None, source_id: str | None, model: str | None, voice: str | None, replace: bool):
     """Prepare, narrate, upload and publish one Markdown article."""
     try:
         config = _config(ctx)
-        if not replace:
-            try:
-                _, existing = find_episode(config, reference)
-            except ValueError:
-                existing = None
-            if existing and existing.get("published_at"):
-                click.echo(existing.get("feed_url") or config["github_pages_url"].rstrip("/") + "/feed.xml")
-                click.echo(f"Episode {existing['id']} is already published", err=True)
+        markdown = _read_markdown_input(reference, source_id)
+        if markdown is not None:
+            path, state = prepare_workspace(config, raw_input=markdown, source_id=source_id)
+            if state.get("published_at") and not replace:
+                click.echo(state.get("feed_url") or config["github_pages_url"].rstrip("/") + "/feed.xml")
+                click.echo(f"Episode {state['id']} is already published", err=True)
                 return
+        if not replace:
+            if markdown is None:
+                try:
+                    _, existing = find_episode(config, reference)
+                except ValueError:
+                    existing = None
+                if existing and existing.get("published_at"):
+                    click.echo(existing.get("feed_url") or config["github_pages_url"].rstrip("/") + "/feed.xml")
+                    click.echo(f"Episode {existing['id']} is already published", err=True)
+                    return
         click.echo("Preparing Markdown", err=True)
-        path, state = prepare_workspace(config, reference)
+        if markdown is None:
+            path, state = prepare_workspace(config, reference)
         _narrate(config, path, state, model, voice)
         click.echo(_publish(config, path, state, replace))
     except Exception as error:

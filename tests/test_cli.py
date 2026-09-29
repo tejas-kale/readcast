@@ -67,6 +67,43 @@ def test_prepare_rejects_bad_input_and_saves_inspectable_work(project):
     assert failed.exit_code != 0 and "title" in failed.output
 
 
+def test_prepare_stdin_and_source_id_identity(project):
+    config, article, root = project
+    from readcast.workspace import load_state
+
+    runner = CliRunner()
+    first = runner.invoke(main, ["--config-dir", str(config), "prepare"], input=ARTICLE)
+    assert first.exit_code == 0, first.output
+    episode_id = first.stdout.strip()
+    workspace = root / "data" / "episodes" / episode_id
+    state = load_state(workspace)
+    assert state["source_path"] == ""
+    assert (workspace / "snapshot.md").read_text() == ARTICLE
+
+    file_result = runner.invoke(main, ["--config-dir", str(config), "prepare", str(article)])
+    assert file_result.exit_code == 0 and file_result.stdout.strip() == episode_id
+    by_url = runner.invoke(main, ["--config-dir", str(config), "prepare", "-"], input=ARTICLE)
+    assert by_url.exit_code == 0 and by_url.stdout.strip() == episode_id
+    assert load_state(workspace)["source_path"] == str(article.resolve())
+
+    no_url_article = ARTICLE.replace("source: https://example.com/article\n", "")
+    stable = runner.invoke(main, ["--config-dir", str(config), "prepare", "--source-id", "clip-1"], input=no_url_article)
+    assert stable.exit_code == 0, stable.output
+    again = runner.invoke(main, ["--config-dir", str(config), "prepare", "-", "--source-id", "clip-1"], input=no_url_article)
+    assert again.exit_code == 0 and again.stdout.strip() == stable.stdout.strip()
+    assert runner.invoke(main, ["--config-dir", str(config), "prepare", str(article), "--source-id", "x"]).exit_code != 0
+    assert runner.invoke(main, ["--config-dir", str(config), "prepare", "--source-id", "x"], input=ARTICLE).exit_code != 0
+
+
+def test_prepare_stdin_requires_content_and_valid_utf8(project):
+    config, _, _ = project
+    runner = CliRunner()
+    empty = runner.invoke(main, ["--config-dir", str(config), "prepare"], input="")
+    assert empty.exit_code != 0 and "empty" in empty.output
+    invalid = runner.invoke(main, ["--config-dir", str(config), "prepare", "-"], input=b"\xff")
+    assert invalid.exit_code != 0 and "UTF-8" in invalid.output
+
+
 def test_full_run_resume_skip_and_replace(project, monkeypatch):
     config, article, root = project
     generated = []

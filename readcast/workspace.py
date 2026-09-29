@@ -73,7 +73,40 @@ def _source_url(metadata: dict) -> str:
     return value
 
 
-def prepare(config: dict, reference: str) -> tuple[Path, dict]:
+def prepare(config: dict, reference: str | None = None, *, raw_input: bytes | None = None,
+            source_id: str | None = None) -> tuple[Path, dict]:
+    if raw_input is not None:
+        if source_id is not None and not source_id.strip():
+            raise ValueError("--source-id must not be empty")
+        original = ""
+        raw = raw_input
+        if not raw.strip():
+            raise ValueError("Markdown input is empty")
+        try:
+            markdown = raw.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ValueError("Markdown must be UTF-8") from error
+        metadata, script = preprocess_markdown(markdown)
+        source_url = _source_url(metadata)
+        if source_id and source_url:
+            raise ValueError("--source-id cannot be used when Markdown frontmatter contains a source URL")
+        if source_id:
+            identity = "source-id:" + source_id
+        elif source_url:
+            identity = source_url
+        else:
+            identity = "stdin-sha256:" + digest(raw)
+        old = next(((path, state) for path, state in all_states(config)
+                    if (source_url and state.get("source_url") == source_url)
+                    or (source_id and state.get("source_id") == source_id)
+                    or (not source_url and not source_id and state.get("source_hash") == digest(raw)
+                        and not state.get("source_url") and not state.get("source_id"))), None)
+        return _save_prepared(config, original, raw, metadata, script, source_url,
+                              old, identity, source_id)
+    if source_id:
+        raise ValueError("--source-id is only available when reading Markdown from stdin")
+    if reference is None:
+        raise ValueError("Provide a Markdown file or pipe Markdown on stdin")
     if reference.startswith(("http://", "https://")):
         raise ValueError("Readcast accepts Markdown files, not URLs")
     candidate = Path(reference).expanduser()
@@ -108,10 +141,15 @@ def prepare(config: dict, reference: str) -> tuple[Path, dict]:
         previous_path, previous_state = by_path
         previous_state["source_path"] = ""
         save_state(previous_path, previous_state)
+    return _save_prepared(config, original, raw, metadata, script, source_url, old,
+                          source_url or original, None)
+
+
+def _save_prepared(config: dict, original: str, raw: bytes, metadata: dict, script: str,
+                   source_url: str, old, identity: str, source_id: str | None) -> tuple[Path, dict]:
     if old:
         path, state = old
     else:
-        identity = source_url or original
         episode_id = digest(identity.encode("utf-8"))[:24]
         path = workspace(config, episode_id)
         state = {"id": episode_id, "guid": f"urn:readcast:episode:{episode_id}"}
@@ -119,8 +157,9 @@ def prepare(config: dict, reference: str) -> tuple[Path, dict]:
     script_hash = digest(script.encode("utf-8"))
     changed = state.get("source_hash") != raw_hash or state.get("script_hash") != script_hash
     state.update({
-        "source_path": original,
+        "source_path": original or state.get("source_path", ""),
         "source_url": source_url,
+        "source_id": source_id or "",
         "title": str(metadata["title"]).strip(),
         "author": _author(metadata.get("author")),
         "description": str(metadata.get("description") or ""),
