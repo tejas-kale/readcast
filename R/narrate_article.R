@@ -51,7 +51,33 @@ generate_chunk <- function(text, model, voice) {
     httr2::req_headers(Authorization = paste("Bearer", key)) |>
     httr2::req_body_json(list(model = model, input = text, voice = voice, response_format = "mp3", speed = 1)) |>
     httr2::req_timeout(300) |>
+    httr2::req_error(is_error = function(response) FALSE) |>
     httr2::req_perform()
+  status <- httr2::resp_status(response)
+  if (status < 200L || status >= 300L) {
+    payload <- tryCatch(httr2::resp_body_json(response, simplifyVector = FALSE), error = function(error) NULL)
+    details <- if (is.list(payload)) payload$error else NULL
+    if (is.character(details) && length(details) == 1L) details <- list(message = details)
+    if (!is.list(details)) details <- list()
+    code <- details$code
+    message <- details$message
+    if (!is.character(code) && !is.numeric(code)) code <- NULL
+    if (length(code) != 1L) code <- NULL
+    if (!is.character(message) || length(message) != 1L) message <- NULL
+    clean_detail <- function(value) {
+      if (is.null(value) || !nzchar(value)) return(NULL)
+      value <- gsub(key, "[redacted]", value, fixed = TRUE)
+      value <- gsub(text, "[redacted request text]", value, fixed = TRUE)
+      value <- gsub("[[:cntrl:]]+", " ", value)
+      value <- stringr::str_squish(value)
+      if (!nzchar(value)) NULL else substr(value, 1L, 240L)
+    }
+    code <- clean_detail(if (is.null(code)) "" else as.character(code))
+    message <- clean_detail(message)
+    description <- c(if (!is.null(code)) paste0("code ", code), if (!is.null(message)) message)
+    suffix <- if (length(description)) paste0(": ", paste(description, collapse = " — ")) else ""
+    stop("OpenRouter audio request failed (HTTP ", status, ")", suffix, call. = FALSE)
+  }
   content_type <- httr2::resp_header(response, "content-type", default = "")
   if (!startsWith(tolower(content_type), "audio/mpeg")) stop("Expected MP3 audio, got ", content_type)
   audio <- httr2::resp_body_raw(response)
