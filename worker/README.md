@@ -14,9 +14,10 @@ For Readcast, set `worker_url`, `r2_account_id`, and `r2_bucket` in
 `~/.config/readcast/config.yml`. Set `R2_ACCESS_KEY_ID` and
 `R2_SECRET_ACCESS_KEY` as environment variables. A secret manager may inject
 them into the environment of the Readcast process.
-Create an R2 API token with object read and write permissions. Readcast's connection check lists a bucket page and probes the Worker with a deliberately missing
-object; it does not upload anything. The upload helper records the Worker
-origin in `config.yml` on its first successful upload and rejects a later
-address change.
+Create an R2 API token with object read and write permissions. `readcast config check`
+reports missing local prerequisites and settings, then lists one bucket page
+and probes the Worker with a missing object without uploading anything.
+Readcast records the Worker origin with each uploaded episode and rejects an
+address change. An existing `hosted_worker_url` setting also pins that origin.
 
 Run the contract suite with `node --test tests/worker/audio.test.js`.

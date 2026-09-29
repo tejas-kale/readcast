@@ -176,6 +176,7 @@ testthat::test_that("episode publication verifies audio, cover and the live RSS 
   episode$audio_size <- "42"
   episode$published <- "Mon, 01 Jan 2024 12:00:00 GMT"
   cover_url <- "https://reader.github.io/podcast/cover.png"
+  cover_size <- file.info(cover)$size
   live_feed <- build_podcast_feed(list(episode), "https://reader.github.io/podcast", "Readcast", "Collection", "en", "false", cover_url)
   token_before <- Sys.getenv("GITHUB_TOKEN", unset = NA_character_)
   on.exit({
@@ -204,7 +205,7 @@ testthat::test_that("episode publication verifies audio, cover and the live RSS 
       return(httr2::response(status_code = status, url = request$url))
     }
     if (identical(request$method, "GET")) return(httr2::response(url = request$url, body = charToRaw(live_feed)))
-    headers <- if (identical(request$url, cover_url)) list(`content-type` = "image/png") else list(`content-type` = "audio/mpeg", `content-length` = "42")
+    headers <- if (identical(request$url, cover_url)) list(`content-type` = "image/png", `content-length` = as.character(cover_size)) else list(`content-type` = "audio/mpeg", `content-length` = "42")
     httr2::response(url = request$url, method = request$method, headers = headers)
   }
   uploader <- function(path, config_dir, object_key = NULL) {
