@@ -8,3 +8,7 @@ renv/staging/
 *.progress
 *.log
 .wrangler/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
