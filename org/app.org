@@ -140,6 +140,32 @@ cache_path <- function(article_path, model, voice, module_dir, cache_dir) {
 #+end_src
 
 #+begin_src R :tangle ../app.R
+latest_recoverable_episode <- function(clippings, root, state_dir, module_dir, cache_dir) {
+  records <- list.files(state_dir, pattern = "^[[:xdigit:]]{64}\\.dcf$", full.names = TRUE)
+  if (!length(records) || !length(clippings)) return(NULL)
+  records <- records[order(file.info(records)$mtime, decreasing = TRUE)]
+  for (record_path in records) {
+    episode <- tryCatch(as.list(read.dcf(record_path)[1L, , drop = TRUE]), error = function(error) NULL)
+    if (is.null(episode) || !identical(podcast_episode_status(episode), "recoverable") ||
+        !nzchar(episode$model %||% "") || !nzchar(episode$voice %||% "")) next
+    episode_id <- tools::file_path_sans_ext(basename(record_path))
+    for (relative in clippings) {
+      clipping <- file.path(root, relative)
+      matches <- tryCatch(identical(podcast_episode_id(clipping, episode$model, episode$voice), episode_id),
+                          error = function(error) FALSE)
+      if (!matches) next
+      audio <- tryCatch(cache_path(clipping, episode$model, episode$voice, module_dir, cache_dir),
+                        error = function(error) "")
+      if (nzchar(audio) && file.exists(audio) && is.finite(file.info(audio)$size) && file.info(audio)$size > 0L) {
+        return(list(article = relative, model = episode$model, voice = episode$voice))
+      }
+    }
+  }
+  NULL
+}
+#+end_src
+
+#+begin_src R :tangle ../app.R
 start_narration <- function(article_path, output, model, voice, module_dir) {
   progress_file <- paste0(output, ".progress")
   unlink(progress_file)
@@ -311,6 +337,9 @@ server <- function(input, output, session) {
   active_clippings_dir <- shiny::reactiveVal(clippings_dir)
   clippings <- if (nzchar(clippings_dir)) list_clippings(clippings_dir) else character()
   models <- discover_tts_models()
+  recovery <- if (nzchar(clippings_dir)) latest_recoverable_episode(clippings, clippings_dir, podcast_state_dir, module_dir, cache_dir) else NULL
+  if (!is.null(recovery) && !recovery$model %in% models) models <- c(models, stats::setNames(recovery$model, recovery$model))
+  preserve_recovery_voice <- shiny::reactiveVal(!is.null(recovery))
   state <- shiny::reactiveValues(job = NULL, status = "Choose an article to begin.", refresh = 0L)
   cover_state <- shiny::reactiveValues(status = "Edit the prompt, then generate a cover candidate.", refresh = 0L)
   cover_prompt_state <- shiny::reactiveVal(default_cover_prompt())
@@ -322,10 +351,16 @@ server <- function(input, output, session) {
     github_access = list(ok = FALSE, message = "Not checked."),
     github_pages = list(ok = FALSE, message = "Not checked.")
   )
-  shiny::updateSelectizeInput(session, "article", choices = clippings, selected = character(0), server = TRUE)
-  shiny::updateSelectInput(session, "model", choices = models, selected = if ("microsoft/mai-voice-2-flash" %in% models) "microsoft/mai-voice-2-flash" else unname(models[[1]]))
+  shiny::updateSelectizeInput(session, "article", choices = clippings, selected = if (is.null(recovery)) character(0) else recovery$article, server = TRUE)
+  initial_model <- if (!is.null(recovery)) recovery$model else if ("microsoft/mai-voice-2-flash" %in% models) "microsoft/mai-voice-2-flash" else unname(models[[1]])
+  shiny::updateSelectInput(session, "model", choices = models, selected = initial_model)
+  if (!is.null(recovery)) shiny::updateTextInput(session, "voice", value = recovery$voice)
 
   shiny::observeEvent(input$model, {
+    if (isTRUE(preserve_recovery_voice()) && !is.null(recovery) && identical(input$model, recovery$model)) {
+      preserve_recovery_voice(FALSE)
+      return()
+    }
     shiny::updateTextInput(session, "voice", value = default_voice(input$model))
   })
 
@@ -510,7 +545,10 @@ server <- function(input, output, session) {
 
   shiny::observeEvent(input$publish_episode, {
     path <- tryCatch(selected_path(), error = function(error) NULL)
-    if (is.null(path)) return()
+    if (is.null(path)) {
+      shiny::showNotification("Choose an article before publishing its MP3.", type = "error")
+      return()
+    }
     episode <- read_podcast_episode(path, input$model, input$voice, podcast_state_dir)
     if (is.null(episode) && is.null(read_podcast_eligibility(path, podcast_state_dir))) {
       shiny::showModal(shiny::modalDialog(title = "Confirm podcast eligibility",
