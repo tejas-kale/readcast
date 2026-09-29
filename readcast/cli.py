@@ -12,7 +12,7 @@ import sys
 import click
 
 from .config import load_config
-from .workspace import all_states, find_episode, prepare as prepare_workspace, save_state, stage_status
+from .workspace import all_states, find_episode, find_stdin_episode, prepare as prepare_workspace, save_state, stage_status
 
 
 def _config(ctx: click.Context) -> dict:
@@ -99,13 +99,10 @@ def main(ctx: click.Context, config_dir: Path):
 
 
 def _read_markdown_input(reference: str | None, source_id: str | None) -> bytes | None:
-    stream = getattr(sys.stdin, "buffer", sys.stdin)
-    if reference == "-":
-        contents = stream.read()
-        return contents.encode("utf-8") if isinstance(contents, str) else contents
-    if reference is None:
-        if sys.stdin.isatty():
-            raise ValueError("Provide a Markdown file or pipe Markdown on stdin")
+    if reference is None and sys.stdin.isatty():
+        raise ValueError("Provide a Markdown file or pipe Markdown on stdin")
+    if reference in (None, "-"):
+        stream = getattr(sys.stdin, "buffer", sys.stdin)
         contents = stream.read()
         return contents.encode("utf-8") if isinstance(contents, str) else contents
     if source_id:
@@ -186,11 +183,14 @@ def run(ctx: click.Context, reference: str | None, source_id: str | None, model:
         config = _config(ctx)
         markdown = _read_markdown_input(reference, source_id)
         if markdown is not None:
+            if not replace:
+                existing = find_stdin_episode(config, markdown, source_id)
+                if existing and existing[1].get("published_at"):
+                    state = existing[1]
+                    click.echo(state.get("feed_url") or config["github_pages_url"].rstrip("/") + "/feed.xml")
+                    click.echo(f"Episode {state['id']} is already published", err=True)
+                    return
             path, state = prepare_workspace(config, raw_input=markdown, source_id=source_id)
-            if state.get("published_at") and not replace:
-                click.echo(state.get("feed_url") or config["github_pages_url"].rstrip("/") + "/feed.xml")
-                click.echo(f"Episode {state['id']} is already published", err=True)
-                return
         if not replace:
             if markdown is None:
                 try:

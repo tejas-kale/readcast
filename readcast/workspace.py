@@ -73,6 +73,28 @@ def _source_url(metadata: dict) -> str:
     return value
 
 
+def find_stdin_episode(config: dict, raw: bytes, source_id: str | None = None) -> tuple[Path, dict] | None:
+    """Find an existing stdin episode without refreshing or mutating its workspace."""
+    if source_id is not None and not source_id.strip():
+        raise ValueError("--source-id must not be empty")
+    if not raw.strip():
+        raise ValueError("Markdown input is empty")
+    try:
+        markdown = raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError("Markdown must be UTF-8") from error
+    metadata, _ = preprocess_markdown(markdown)
+    source_url = _source_url(metadata)
+    if source_id and source_url:
+        raise ValueError("--source-id cannot be used when Markdown frontmatter contains a source URL")
+    return next(((path, state) for path, state in all_states(config)
+                 if (source_url and state.get("source_url") == source_url)
+                 or (source_id and state.get("source_id") == source_id)
+                 or (not source_url and not source_id and not state.get("source_path")
+                     and state.get("source_hash") == digest(raw)
+                     and not state.get("source_url") and not state.get("source_id"))), None)
+
+
 def prepare(config: dict, reference: str | None = None, *, raw_input: bytes | None = None,
             source_id: str | None = None) -> tuple[Path, dict]:
     if raw_input is not None:
@@ -99,7 +121,8 @@ def prepare(config: dict, reference: str | None = None, *, raw_input: bytes | No
         old = next(((path, state) for path, state in all_states(config)
                     if (source_url and state.get("source_url") == source_url)
                     or (source_id and state.get("source_id") == source_id)
-                    or (not source_url and not source_id and state.get("source_hash") == digest(raw)
+                    or (not source_url and not source_id and not state.get("source_path")
+                        and state.get("source_hash") == digest(raw)
                         and not state.get("source_url") and not state.get("source_id"))), None)
         return _save_prepared(config, original, raw, metadata, script, source_url,
                               old, identity, source_id)

@@ -104,6 +104,38 @@ def test_prepare_stdin_requires_content_and_valid_utf8(project):
     assert invalid.exit_code != 0 and "UTF-8" in invalid.output
 
 
+def test_published_stdin_run_skips_without_refreshing_and_hash_does_not_reuse_file(project):
+    config, article, root = project
+    runner = CliRunner()
+    no_url_article = ARTICLE.replace("source: https://example.com/article\n", "")
+    file_article = root / "file-article.md"
+    file_article.write_text(no_url_article)
+    file_id = runner.invoke(main, ["--config-dir", str(config), "prepare", str(file_article)]).stdout.strip()
+    stdin_prepared = runner.invoke(main, ["--config-dir", str(config), "prepare", "-"], input=no_url_article)
+    assert stdin_prepared.exit_code == 0, stdin_prepared.output
+    hash_stdin_id = stdin_prepared.stdout.strip()
+    assert hash_stdin_id != file_id
+    stable = runner.invoke(main, ["--config-dir", str(config), "prepare", "--source-id", "clip-1"], input=no_url_article)
+    assert stable.exit_code == 0, stable.output
+    stdin_id = stable.stdout.strip()
+
+    workspace = root / "data" / "episodes" / stdin_id
+    state_path = workspace / "state.json"
+    state = json.loads(state_path.read_text())
+    state.update(published_at="2024-01-03T00:00:00+00:00", feed_url="https://example.github.io/readcast/feed.xml")
+    state_path.write_text(json.dumps(state))
+    snapshot = (workspace / "snapshot.md").read_bytes()
+    episode_audio = workspace / "episode.mp3"
+    episode_audio.write_bytes(b"published-audio")
+    changed = no_url_article.replace("A useful article", "A changed article")
+    skipped = runner.invoke(main, ["--config-dir", str(config), "run", "--source-id", "clip-1"], input=changed)
+    assert skipped.exit_code == 0, skipped.output
+    assert skipped.stdout.strip() == "https://example.github.io/readcast/feed.xml"
+    assert (workspace / "snapshot.md").read_bytes() == snapshot
+    assert episode_audio.read_bytes() == b"published-audio"
+    assert json.loads(state_path.read_text())["source_hash"] == state["source_hash"]
+
+
 def test_full_run_resume_skip_and_replace(project, monkeypatch):
     config, article, root = project
     generated = []
