@@ -614,7 +614,7 @@ server <- function(input, output, session) {
       shiny::showNotification("Narration ready", type = "message")
     } else {
       log_path <- paste0(job$output, ".error.log")
-      details <- if (file.exists(log_path)) tail(readLines(log_path, warn = FALSE), 3L) else "See the generation log."
+      details <- if (file.exists(log_path)) utils::tail(readLines(log_path, warn = FALSE), 3L) else "See the generation log."
       state$status <- "Generation failed. Your article is still available to read."
       shiny::showNotification(paste(details, collapse = " "), type = "error", duration = NULL)
     }

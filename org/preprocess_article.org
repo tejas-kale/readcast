@@ -72,7 +72,7 @@ cue_blockquotes <- function(text) {
         current <- character()
       }
     }
-    if (length(output) && nzchar(tail(output, 1L))) output <- c(output, "")
+    if (length(output) && nzchar(utils::tail(output, 1L))) output <- c(output, "")
     c(output, paste(unlist(paragraphs), collapse = "\n\n"))
   }
   for (line in lines) {
