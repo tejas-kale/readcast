@@ -92,6 +92,7 @@ def test_prepare_stdin_and_source_id_identity(project):
     again = runner.invoke(main, ["--config-dir", str(config), "prepare", "-", "--source-id", "clip-1"], input=no_url_article)
     assert again.exit_code == 0 and again.stdout.strip() == stable.stdout.strip()
     assert runner.invoke(main, ["--config-dir", str(config), "prepare", str(article), "--source-id", "x"]).exit_code != 0
+    assert runner.invoke(main, ["--config-dir", str(config), "prepare", str(article), "--source-id", ""]).exit_code != 0
     assert runner.invoke(main, ["--config-dir", str(config), "prepare", "--source-id", "x"], input=ARTICLE).exit_code != 0
 
 

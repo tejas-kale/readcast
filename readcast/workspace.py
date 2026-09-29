@@ -73,8 +73,7 @@ def _source_url(metadata: dict) -> str:
     return value
 
 
-def find_stdin_episode(config: dict, raw: bytes, source_id: str | None = None) -> tuple[Path, dict] | None:
-    """Find an existing stdin episode without refreshing or mutating its workspace."""
+def _parse_stdin_markdown(raw: bytes, source_id: str | None) -> tuple[dict, str, str, str]:
     if source_id is not None and not source_id.strip():
         raise ValueError("--source-id must not be empty")
     if not raw.strip():
@@ -83,10 +82,17 @@ def find_stdin_episode(config: dict, raw: bytes, source_id: str | None = None) -
         markdown = raw.decode("utf-8")
     except UnicodeDecodeError as error:
         raise ValueError("Markdown must be UTF-8") from error
-    metadata, _ = preprocess_markdown(markdown)
+    metadata, script = preprocess_markdown(markdown)
     source_url = _source_url(metadata)
     if source_id and source_url:
         raise ValueError("--source-id cannot be used when Markdown frontmatter contains a source URL")
+    identity = "source-id:" + source_id if source_id else source_url or "stdin-sha256:" + digest(raw)
+    return metadata, script, source_url, identity
+
+
+def find_stdin_episode(config: dict, raw: bytes, source_id: str | None = None) -> tuple[Path, dict] | None:
+    """Find an existing stdin episode without refreshing or mutating its workspace."""
+    _, _, source_url, _ = _parse_stdin_markdown(raw, source_id)
     return next(((path, state) for path, state in all_states(config)
                  if (source_url and state.get("source_url") == source_url)
                  or (source_id and state.get("source_id") == source_id)
@@ -98,26 +104,9 @@ def find_stdin_episode(config: dict, raw: bytes, source_id: str | None = None) -
 def prepare(config: dict, reference: str | None = None, *, raw_input: bytes | None = None,
             source_id: str | None = None) -> tuple[Path, dict]:
     if raw_input is not None:
-        if source_id is not None and not source_id.strip():
-            raise ValueError("--source-id must not be empty")
         original = ""
         raw = raw_input
-        if not raw.strip():
-            raise ValueError("Markdown input is empty")
-        try:
-            markdown = raw.decode("utf-8")
-        except UnicodeDecodeError as error:
-            raise ValueError("Markdown must be UTF-8") from error
-        metadata, script = preprocess_markdown(markdown)
-        source_url = _source_url(metadata)
-        if source_id and source_url:
-            raise ValueError("--source-id cannot be used when Markdown frontmatter contains a source URL")
-        if source_id:
-            identity = "source-id:" + source_id
-        elif source_url:
-            identity = source_url
-        else:
-            identity = "stdin-sha256:" + digest(raw)
+        metadata, script, source_url, identity = _parse_stdin_markdown(raw, source_id)
         old = next(((path, state) for path, state in all_states(config)
                     if (source_url and state.get("source_url") == source_url)
                     or (source_id and state.get("source_id") == source_id)
@@ -126,7 +115,7 @@ def prepare(config: dict, reference: str | None = None, *, raw_input: bytes | No
                         and not state.get("source_url") and not state.get("source_id"))), None)
         return _save_prepared(config, original, raw, metadata, script, source_url,
                               old, identity, source_id)
-    if source_id:
+    if source_id is not None:
         raise ValueError("--source-id is only available when reading Markdown from stdin")
     if reference is None:
         raise ValueError("Provide a Markdown file or pipe Markdown on stdin")

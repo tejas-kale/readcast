@@ -105,7 +105,7 @@ def _read_markdown_input(reference: str | None, source_id: str | None) -> bytes 
         stream = getattr(sys.stdin, "buffer", sys.stdin)
         contents = stream.read()
         return contents.encode("utf-8") if isinstance(contents, str) else contents
-    if source_id:
+    if source_id is not None:
         raise ValueError("--source-id is only available when reading Markdown from stdin")
     return None
 
