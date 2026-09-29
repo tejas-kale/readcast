@@ -374,6 +374,19 @@ server <- function(input, output, session) {
   })
   article <- shiny::reactive(article_parts(selected_path()))
 
+  publish_identity <- function(path) {
+    model <- input$model %||% ""
+    voice <- input$voice %||% ""
+    has_model <- length(model) == 1L && !is.na(model) && nzchar(model)
+    has_voice <- length(voice) == 1L && !is.na(voice) && nzchar(voice)
+    if (has_model && has_voice) return(list(model = model, voice = voice))
+    if (is.null(input$article) || !nzchar(input$article)) return(NULL)
+    restored <- latest_recoverable_episode(input$article, active_clippings_dir(), podcast_state_dir, module_dir, cache_dir)
+    if (is.null(restored) || !identical(normalizePath(file.path(active_clippings_dir(), input$article), mustWork = TRUE), normalizePath(path, mustWork = TRUE))) return(NULL)
+    if ((has_model && !identical(model, restored$model)) || (has_voice && !identical(voice, restored$voice))) return(NULL)
+    list(model = restored$model, voice = restored$voice)
+  }
+
   output$article_header <- shiny::renderUI({
     shiny::req(input$article)
     item <- article()
@@ -399,12 +412,21 @@ server <- function(input, output, session) {
   shiny::observeEvent(list(input$article, input$model, input$voice), {
     if (is.null(input$article) || !nzchar(input$article)) return()
     item <- article()
-    shiny::updateTextInput(session, "episode_title", value = default_episode_title(item$title, input$model %||% "", input$voice %||% ""))
     if (is.null(input$model) || !nzchar(input$model) || is.null(input$voice) || !nzchar(input$voice)) {
-      publish_state$episode_status <- "Publication pending: choose a model and voice to identify the episode."
+      publish_state$episode_status <- "Publication pending: restoring the saved narration model and voice."
       return()
     }
-    saved <- read_podcast_episode(selected_path(), input$model, input$voice, podcast_state_dir)
+    shiny::updateTextInput(session, "episode_title", value = default_episode_title(item$title, input$model, input$voice))
+    read_error <- NULL
+    saved <- tryCatch(read_podcast_episode(selected_path(), input$model, input$voice, podcast_state_dir), error = function(error) {
+      read_error <<- error
+      NULL
+    })
+    if (!is.null(read_error)) {
+      publish_state$episode_status <- paste("Saved episode metadata could not be read:", conditionMessage(read_error))
+      shiny::showNotification(publish_state$episode_status, type = "error", duration = NULL)
+      return()
+    }
     status <- podcast_episode_status(saved)
     publish_state$episode_status <- switch(status,
       pending = "Publication pending: no audio has been published for this episode.",
@@ -495,27 +517,32 @@ server <- function(input, output, session) {
     cache_path(selected_path(), input$model, stringr::str_trim(input$voice %||% ""), module_dir, cache_dir)
   })
 
-  publish_episode_now <- function(eligible = TRUE) {
+  publish_episode_now <- function(eligible = TRUE, identity = NULL) {
     path <- selected_path()
-    episode <- read_podcast_episode(path, input$model, input$voice, podcast_state_dir)
+    identity <- identity %||% publish_identity(path)
+    if (is.null(identity)) stop("Wait for the saved narration model and voice to restore, or choose them before publishing.", call. = FALSE)
+    model <- identity$model
+    voice <- identity$voice
+    episode <- read_podcast_episode(path, model, voice, podcast_state_dir)
     if (is.null(episode)) {
       item <- article()
       episode <- confirm_podcast_eligibility(path, eligible, input$episode_title,
-        item$description, input$model, input$voice, podcast_state_dir)
+        item$description, model, voice, podcast_state_dir)
     } else if (!identical(episode$eligible, "true")) {
       publish_state$episode_status <- "This clipping was marked ineligible. Its decision is saved."
       return(invisible(NULL))
     } else {
-      episode$title <- trimws(input$episode_title)
+      entered_title <- trimws(input$episode_title %||% "")
+      if (nzchar(entered_title)) episode$title <- entered_title
       episode$description <- article()$description
-      episode$model <- input$model
-      episode$voice <- input$voice
+      episode$model <- model
+      episode$voice <- voice
     }
     if (!identical(episode$eligible, "true")) {
       publish_state$episode_status <- "This clipping was marked ineligible. Its decision is saved."
       return(invisible(NULL))
     }
-    output_path <- current_cache()
+    output_path <- cache_path(path, model, voice, module_dir, cache_dir)
     if (!file.exists(output_path) || file.info(output_path)$size <= 0L) stop("Generate or select an existing cached narration before publishing.", call. = FALSE)
     publish_state$episode_status <- "Publication pending: uploading audio and updating the feed."
     result <- publish_podcast_episode(path, output_path, cover_files$approved, episode)
@@ -549,13 +576,48 @@ server <- function(input, output, session) {
       shiny::showNotification("Choose an article before publishing its MP3.", type = "error")
       return()
     }
-    episode <- read_podcast_episode(path, input$model, input$voice, podcast_state_dir)
-    if (is.null(episode) && is.null(read_podcast_eligibility(path, podcast_state_dir))) {
+    identity_error <- NULL
+    identity <- tryCatch(publish_identity(path), error = function(error) {
+      identity_error <<- error
+      NULL
+    })
+    if (!is.null(identity_error)) {
+      publish_state$episode_status <- paste("Could not restore the saved narration identity:", conditionMessage(identity_error))
+      shiny::showNotification(publish_state$episode_status, type = "error", duration = NULL)
+      return()
+    }
+    if (is.null(identity)) {
+      message <- "Wait for the saved narration model and voice to restore, or choose them before publishing."
+      publish_state$episode_status <- message
+      shiny::showNotification(message, type = "message")
+      return()
+    }
+    episode_error <- NULL
+    episode <- tryCatch(read_podcast_episode(path, identity$model, identity$voice, podcast_state_dir), error = function(error) {
+      episode_error <<- error
+      NULL
+    })
+    if (!is.null(episode_error)) {
+      publish_state$episode_status <- paste("Saved episode metadata could not be read:", conditionMessage(episode_error))
+      shiny::showNotification(publish_state$episode_status, type = "error", duration = NULL)
+      return()
+    }
+    eligibility_error <- NULL
+    eligibility <- tryCatch(read_podcast_eligibility(path, podcast_state_dir), error = function(error) {
+      eligibility_error <<- error
+      NULL
+    })
+    if (!is.null(eligibility_error)) {
+      publish_state$episode_status <- conditionMessage(eligibility_error)
+      shiny::showNotification(publish_state$episode_status, type = "error", duration = NULL)
+      return()
+    }
+    if (is.null(episode) && is.null(eligibility)) {
       shiny::showModal(shiny::modalDialog(title = "Confirm podcast eligibility",
         shiny::p("Is this clipping eligible for podcast publication? Confirm that you have the rights to publish its narration and metadata."),
         footer = shiny::tagList(shiny::actionButton("confirm_episode_eligible", "Yes, publish this clipping"), shiny::actionButton("deny_episode_eligible", "No, mark ineligible"), shiny::modalButton("Cancel")), easyClose = TRUE))
-    } else tryCatch(publish_episode_now(), error = function(error) {
-      saved <- read_podcast_episode(selected_path(), input$model, input$voice, podcast_state_dir)
+    } else tryCatch(publish_episode_now(identity = identity), error = function(error) {
+      saved <- tryCatch(read_podcast_episode(path, identity$model, identity$voice, podcast_state_dir), error = function(read_error) NULL)
       publish_state$episode_status <- if (identical(podcast_episode_status(saved), "recoverable")) {
         paste("Publication recoverable: uploaded audio is saved. Retry to finish publishing the feed.", conditionMessage(error))
       } else paste("Publication pending:", conditionMessage(error))
@@ -563,8 +625,31 @@ server <- function(input, output, session) {
     })
   })
   shiny::observeEvent(input$confirm_episode_eligible, {
-    tryCatch(publish_episode_now(), error = function(error) {
-      saved <- read_podcast_episode(selected_path(), input$model, input$voice, podcast_state_dir)
+    path <- tryCatch(selected_path(), error = function(error) NULL)
+    if (is.null(path)) {
+      message <- "Choose an article before publishing its MP3."
+      publish_state$episode_status <- message
+      shiny::showNotification(message, type = "error")
+      return()
+    }
+    identity_error <- NULL
+    identity <- tryCatch(publish_identity(path), error = function(error) {
+      identity_error <<- error
+      NULL
+    })
+    if (!is.null(identity_error)) {
+      publish_state$episode_status <- paste("Could not restore the saved narration identity:", conditionMessage(identity_error))
+      shiny::showNotification(publish_state$episode_status, type = "error", duration = NULL)
+      return()
+    }
+    if (is.null(identity)) {
+      message <- "Wait for the saved narration model and voice to restore, or choose them before publishing."
+      publish_state$episode_status <- message
+      shiny::showNotification(message, type = "message")
+      return()
+    }
+    tryCatch(publish_episode_now(identity = identity), error = function(error) {
+      saved <- tryCatch(read_podcast_episode(path, identity$model, identity$voice, podcast_state_dir), error = function(read_error) NULL)
       publish_state$episode_status <- if (identical(podcast_episode_status(saved), "recoverable")) {
         paste("Publication recoverable: uploaded audio is saved. Retry to finish publishing the feed.", conditionMessage(error))
       } else paste("Publication pending:", conditionMessage(error))
@@ -573,9 +658,12 @@ server <- function(input, output, session) {
   })
   shiny::observeEvent(input$deny_episode_eligible, {
     tryCatch({
+      path <- selected_path()
+      identity <- publish_identity(path)
+      if (is.null(identity)) stop("Wait for the saved narration model and voice to restore, or choose them before deciding.", call. = FALSE)
       item <- article()
-      confirm_podcast_eligibility(selected_path(), FALSE, input$episode_title,
-        item$description, input$model, input$voice, podcast_state_dir)
+      confirm_podcast_eligibility(path, FALSE, input$episode_title,
+        item$description, identity$model, identity$voice, podcast_state_dir)
       publish_state$episode_status <- "This clipping was marked ineligible. Its decision is saved."
     }, error = function(error) {
       publish_state$episode_status <- conditionMessage(error)
