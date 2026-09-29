@@ -7,3 +7,4 @@ renv/staging/
 *.mp3
 *.progress
 *.log
+.wrangler/
