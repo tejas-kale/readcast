@@ -57,18 +57,18 @@ upload_cached_audio <- function(mp3_path, config_dir = path.expand("~/.config/re
   key <- object_key
   endpoint <- sprintf("https://%s.r2.cloudflarestorage.com/%s/%s", account_id, utils::URLencode(bucket, reserved = TRUE), key)
   result <- tryCatch({
-    request <- httr2::request(endpoint) |>
-      httr2::req_method("PUT") |>
-      httr2::req_headers(`Content-Type` = "audio/mpeg", `x-amz-storage-class` = "STANDARD") |>
-      httr2::req_body_file(mp3_path) |>
-      httr2::req_auth_aws_v4(access_key, secret_key, aws_service = "s3", aws_region = "auto") |>
-      httr2::req_timeout(300) |>
-      httr2::req_error(is_error = function(resp) FALSE) |>
-      httr2::req_perform()
-    if (httr2::resp_status(request) < 200L || httr2::resp_status(request) >= 300L) {
-      stop("R2 rejected the upload (HTTP ", httr2::resp_status(request), "). Check the account ID, bucket name, token permissions and R2 subscription.", call. = FALSE)
+    response <- curl::curl_upload(
+      mp3_path, endpoint, verbose = FALSE,
+      aws_sigv4 = "aws:amz:auto:s3",
+      userpwd = paste0(access_key, ":", secret_key),
+      httpheader = c("Content-Type: audio/mpeg", "x-amz-storage-class: STANDARD",
+                     "x-amz-content-sha256: UNSIGNED-PAYLOAD"),
+      timeout = 300
+    )
+    if (response$status_code < 200L || response$status_code >= 300L) {
+      stop("R2 rejected the upload (HTTP ", response$status_code, "). Check the account ID, bucket name, token permissions and R2 subscription.", call. = FALSE)
     }
-    invisible(request)
+    invisible(response)
   }, error = function(error) {
     if (grepl("R2 rejected", conditionMessage(error), fixed = TRUE)) stop(error)
     stop("Could not upload audio to R2: ", conditionMessage(error), ". Check your network and R2 credentials, then retry.", call. = FALSE)
@@ -86,7 +86,7 @@ the current podcast feed. The callback fails closed on any unsuccessful R2
 response, leaving the retention entry available for a later retry.
 
 #+begin_src R
-delete_r2_audio_object <- function(object_key, config_dir = path.expand("~/.config/readcast"), perform = httr2::req_perform) {
+delete_r2_audio_object <- function(object_key, config_dir = path.expand("~/.config/readcast"), perform = NULL) {
   if (length(object_key) != 1L || is.na(object_key) || !grepl("^audio/[A-Za-z0-9_-]+[.]mp3$", object_key)) stop("Refusing to delete an invalid audio object key.", call. = FALSE)
   settings <- if (exists("readcast_setup_settings", mode = "function")) readcast_setup_settings(config_dir) else list(r2_account_id = "", r2_bucket = "")
   account_id <- settings$r2_account_id
@@ -97,12 +97,12 @@ delete_r2_audio_object <- function(object_key, config_dir = path.expand("~/.conf
                if (!nzchar(access_key)) "R2_ACCESS_KEY_ID", if (!nzchar(secret_key)) "R2_SECRET_ACCESS_KEY")
   if (length(missing)) stop("Set the missing R2 environment variable(s): ", paste(missing, collapse = ", "), ". Create an R2 API token with Object Read & Write access.", call. = FALSE)
   endpoint <- sprintf("https://%s.r2.cloudflarestorage.com/%s/%s", account_id, utils::URLencode(bucket, reserved = TRUE), object_key)
-  response <- httr2::request(endpoint) |>
-    httr2::req_method("DELETE") |>
-    httr2::req_auth_aws_v4(access_key, secret_key, aws_service = "s3", aws_region = "auto") |>
-    httr2::req_timeout(30) |>
-    httr2::req_error(is_error = function(resp) FALSE) |>
-    perform()
+  response <- if (is.null(perform)) {
+    readcast_r2_fetch(endpoint, "DELETE", access_key, secret_key, timeout = 30)
+  } else {
+    request <- httr2::request(endpoint) |> httr2::req_method("DELETE")
+    perform(request)
+  }
   if (httr2::resp_status(response) < 200L || httr2::resp_status(response) >= 300L) {
     stop("R2 rejected audio deletion (HTTP ", httr2::resp_status(response), "). The retention entry remains available to retry.", call. = FALSE)
   }

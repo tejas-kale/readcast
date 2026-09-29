@@ -115,7 +115,20 @@ check_readcast_openrouter <- function(api_key = Sys.getenv("OPENROUTER_API_KEY",
   list(ok = TRUE, message = "Connected to OpenRouter. No narration was generated.")
 }
 
-check_readcast_hosting <- function(account_id, bucket, access_key, secret_key, worker_url, perform = httr2::req_perform) {
+# Keep credential-bearing R2 requests inside a local libcurl handle. httr2
+# retains performed requests in last_request(), including their curl options.
+readcast_r2_fetch <- function(url, method, access_key, secret_key, timeout = 15) {
+  handle <- curl::new_handle(
+    aws_sigv4 = "aws:amz:auto:s3",
+    userpwd = paste0(access_key, ":", secret_key),
+    customrequest = method,
+    timeout = timeout
+  )
+  result <- curl::curl_fetch_memory(url, handle = handle)
+  httr2::response(status_code = result$status_code, url = url, method = method)
+}
+
+check_readcast_hosting <- function(account_id, bucket, access_key, secret_key, worker_url, perform = NULL) {
   missing_settings <- c(if (!nzchar(trimws(account_id))) "r2_account_id", if (!nzchar(trimws(bucket))) "r2_bucket", if (!nzchar(trimws(worker_url))) "worker_url")
   missing_credentials <- c(if (!nzchar(trimws(access_key))) "R2_ACCESS_KEY_ID", if (!nzchar(trimws(secret_key))) "R2_SECRET_ACCESS_KEY")
   if (length(missing_settings) || length(missing_credentials)) {
@@ -127,20 +140,23 @@ check_readcast_hosting <- function(account_id, bucket, access_key, secret_key, w
   if (!identical(parsed$scheme, "https") || !grepl("^[a-z0-9-]+\\.[a-z0-9-]+\\.workers\\.dev$", parsed$hostname)) stop("worker_url must be the permanent HTTPS workers.dev origin, without a path.", call. = FALSE)
   if (nzchar(parsed$username %||% "") || nzchar(parsed$password %||% "") || length(parsed$query) || nzchar(parsed$fragment %||% "") || (nzchar(parsed$path %||% "") && parsed$path != "/")) stop("worker_url must not include credentials, query parameters, fragments or a path.", call. = FALSE)
   endpoint <- sprintf("https://%s.r2.cloudflarestorage.com/%s", account_id, utils::URLencode(bucket, reserved = TRUE))
-  r2 <- httr2::request(endpoint) |>
-    httr2::req_url_query(`list-type` = "2", `max-keys` = "1") |>
-    httr2::req_auth_aws_v4(access_key, secret_key, aws_service = "s3", aws_region = "auto") |>
-    httr2::req_timeout(15) |>
-    httr2::req_error(is_error = function(response) FALSE) |>
-    perform()
+  r2_url <- paste0(endpoint, "?list-type=2&max-keys=1")
+  r2 <- if (is.null(perform)) {
+    readcast_r2_fetch(r2_url, "GET", access_key, secret_key)
+  } else {
+    request <- httr2::request(endpoint) |>
+      httr2::req_url_query(`list-type` = "2", `max-keys` = "1")
+    perform(request)
+  }
   r2_status <- httr2::resp_status(r2)
   if (r2_status < 200L || r2_status >= 300L) stop(paste("R2 could not list this bucket (HTTP", r2_status, "). Check the account, bucket and token's object read permission."), call. = FALSE)
   probe <- paste0(sub("/$", "", worker_url), "/audio/readcast-setup-probe-does-not-exist.mp3")
+  worker_perform <- perform %||% httr2::req_perform
   worker <- httr2::request(probe) |>
     httr2::req_method("HEAD") |>
     httr2::req_timeout(15) |>
     httr2::req_error(is_error = function(response) FALSE) |>
-    perform()
+    worker_perform()
   worker_status <- httr2::resp_status(worker)
   if (worker_status != 404L) stop(if (worker_status == 503L) "The Worker is reachable, but it could not read its R2 bucket. Check the AUDIO_BUCKET binding and deploy the Worker." else paste("The Worker probe returned HTTP", worker_status, ". Check the workers.dev URL and deploy the audio Worker."), call. = FALSE)
   list(ok = TRUE, message = "Connected to the R2 bucket and Worker. No objects were changed.")
