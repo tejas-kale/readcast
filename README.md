@@ -31,7 +31,7 @@ Configure the folder containing your Markdown clippings once:
 readcast configure ~/Documents/Clippings
 ```
 
-Readcast saves this non-secret setting in `~/.config/readcast/clippings-dir`. You can instead set `CLIPPINGS_DIR` in the environment to override it. The app reports an actionable error when the configured directory is missing or invalid.
+Readcast saves non-secret settings in `~/.config/readcast/config.yml`. The app reports an actionable error when the configured directory is missing or invalid.
 
 ## Dependencies and credentials
 
@@ -48,15 +48,31 @@ export OPENROUTER_API_KEY="your-key"
 readcast
 ```
 
-Credentials such as `OPENROUTER_API_KEY`, `GITHUB_TOKEN`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY` belong in environment variables (or a local shell secret manager), never in the repository or Readcast's personal configuration. `NARRATION_CACHE_DIR` can override the default MP3 cache directory (`~/.cache/readcast/narrations`).
+All non-secret app settings belong in `~/.config/readcast/config.yml`. This includes `clippings_dir`, `github_pages_url`, `podcast_title`, `podcast_description`, `podcast_language`, `podcast_explicit`, `r2_account_id`, `r2_bucket`, `worker_url`, `narration_cache_dir`, and `data_dir`. Readcast manages `hosted_worker_url` in that file to preserve the origin used for published audio; leave it unchanged. Credentials such as `OPENROUTER_API_KEY`, `GITHUB_TOKEN`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY` must be supplied as environment variables, never in the repository or Readcast's personal configuration. A secret manager may provide them by injecting environment variables into the Readcast process. There are no environment overrides for non-secret settings.
 
-Use **Set up Readcast** in the app to save your Clippings folder, podcast show metadata and optional non-secret publishing values. The connection checks are independent and safe to rerun: Clippings counts local Markdown files, OpenRouter checks its models endpoint, R2 lists one bucket page and probes the Worker with a missing object, GitHub repository access makes a read-only repository API request using `GITHUB_TOKEN`, and GitHub Pages separately requests the public site URL. The GitHub token needs repository contents write access for publication and is never displayed or saved. None of the checks creates resources, generates narration, or publishes audio. The app remains open when setup is incomplete; local reading, narration and playback do not depend on publishing services.
+Edit `~/.config/readcast/config.yml` to set app preferences and non-secret service details. The app's **Check connections** panel provides independent, safe-to-rerun checks: Clippings counts local Markdown files, OpenRouter checks its models endpoint, R2 lists one bucket page and probes the Worker with a missing object, GitHub repository access makes a read-only repository API request using `GITHUB_TOKEN`, and GitHub Pages separately requests the public site URL. The GitHub token needs repository contents write access for publication and is never displayed or saved. None of the checks creates resources, generates narration, or publishes audio. The app remains open when setup is incomplete; local reading, narration and playback do not depend on publishing services.
 
-Publishing is optional and requires one-time manual provisioning. Create a dedicated public GitHub repository for the Pages site and enable Pages from the root of its main branch. Create the private `readcast-audio` R2 bucket, issue a token with Object Read & Write permission, and deploy the bundled Worker with the `AUDIO_BUCKET` binding; see [worker/README.md](worker/README.md). Configure `READCAST_WORKER_URL`, `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY` in the environment. The Pages URL and the permanent `workers.dev` URL are separate addresses. The app's **Upload cached audio to R2** action publishes only the currently selected cache file; the Worker origin is saved after a successful upload and must remain unchanged.
+For example, a configuration can contain:
 
-To publish an episode, select an existing cached narration, approve a show cover, and confirm the clipping's eligibility the first time you publish it. Readcast uploads the MP3 to R2, the approved cover and RSS 2.0 feed to the Pages repository, then checks that the public resources respond before showing the feed URL. In Apple Podcasts, add the show by URL and follow it. Show title, description, language and explicit-content setting are editable in setup; an episode description is included only when the clipping already has description metadata. **Review aged audio cleanup** asks for confirmation, fetches the current live feed, and deletes only replaced audio that has been retained for at least 30 days and is no longer referenced; it needs GitHub and R2 credentials.
+```yaml
+clippings_dir: ~/Documents/Clippings
+github_pages_url: https://account.github.io/podcast/
+podcast_title: Readcast
+podcast_description: A personal collection of narrated articles.
+podcast_language: en
+podcast_explicit: false
+r2_account_id: your-cloudflare-account-id
+r2_bucket: readcast-audio
+worker_url: https://readcast.account.workers.dev
+narration_cache_dir: ~/.cache/readcast/narrations
+data_dir: ~/.local/share/readcast
+```
 
-The Podcast cover controls let you edit a starting prompt, generate and inspect a candidate with OpenRouter's `openai/gpt-image-2`, then explicitly approve it. Candidates and approved artwork are saved separately under `~/.local/share/readcast/covers`; `READCAST_DATA_DIR` can override the parent directory. Generation requires `OPENROUTER_API_KEY`. The approved PNG is checked for a square 1400–3000 px size and an opaque background.
+Publishing is optional and requires one-time manual provisioning. Create a dedicated public GitHub repository for the Pages site and enable Pages from the root of its main branch. Create the private `readcast-audio` R2 bucket, issue a token with Object Read & Write permission, and deploy the bundled Worker with the `AUDIO_BUCKET` binding; see [worker/README.md](worker/README.md). Put `github_pages_url`, `worker_url`, `r2_account_id`, and `r2_bucket` in `~/.config/readcast/config.yml`; put `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` in the environment. The Pages URL and the permanent `workers.dev` URL are separate addresses. The app's **Upload cached audio to R2** action publishes only the currently selected cache file; the Worker origin is saved after a successful upload and must remain unchanged.
+
+To publish an episode, select an existing cached narration, approve a show cover, and confirm the clipping's eligibility the first time you publish it. Readcast uploads the MP3 to R2, the approved cover and RSS 2.0 feed to the Pages repository, then checks that the public resources respond before showing the feed URL. In Apple Podcasts, add the show by URL and follow it. Set show title, description, language, and explicit-content status in `config.yml`; an episode description is included only when the clipping already has description metadata. **Review aged audio cleanup** asks for confirmation, fetches the current live feed, and deletes only replaced audio that has been retained for at least 30 days and is no longer referenced; it needs GitHub and R2 credentials.
+
+The Podcast cover controls let you edit a starting prompt, generate and inspect a candidate with OpenRouter's `openai/gpt-image-2`, then explicitly approve it. Candidates and approved artwork are saved separately under the configured `data_dir` (default `~/.local/share/readcast`). Generation requires `OPENROUTER_API_KEY`. The approved PNG is checked for a square 1400–3000 px size and an opaque background.
 
 When changing the app, edit the org files and regenerate their single R targets from the project root:
 

@@ -10,12 +10,13 @@ The Worker streams R2's `ReadableStream` response directly. It supports `GET`,
 `Content-Range: bytes */<length>`. Malformed or multi-range headers are ignored
 and served as a full `200`, as permitted for range requests.
 
-For Readcast, set `READCAST_WORKER_URL` to the deployed origin and configure
-`R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY`.
-Create an R2 API token with object read and write permissions. Readcast's setup
-check lists a bucket page and probes the Worker with a deliberately missing
-object; it does not upload anything. Keep the credentials in environment
-variables or a local secret manager. The upload helper records the Worker origin on its first
-successful upload and rejects a later address change.
+For Readcast, set `worker_url`, `r2_account_id`, and `r2_bucket` in
+`~/.config/readcast/config.yml`. Set `R2_ACCESS_KEY_ID` and
+`R2_SECRET_ACCESS_KEY` as environment variables. A secret manager may inject
+them into the environment of the Readcast process.
+Create an R2 API token with object read and write permissions. Readcast's connection check lists a bucket page and probes the Worker with a deliberately missing
+object; it does not upload anything. The upload helper records the Worker
+origin in `config.yml` on its first successful upload and rejects a later
+address change.
 
 Run the contract suite with `node --test tests/worker/audio.test.js`.

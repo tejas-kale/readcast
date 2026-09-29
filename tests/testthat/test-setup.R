@@ -3,19 +3,78 @@ source(testthat::test_path("..", "..", "R", "setup.R"), local = TRUE)
 testthat::test_that("personal setup persists only allowed non-secret settings", {
   config <- tempfile("readcast-config-")
   dir.create(config)
-  writeLines("/old/from-cli", file.path(config, "clippings-dir"))
   settings <- list(clippings_dir = "/tmp/clippings", github_pages_url = "https://reader.github.io/podcast/",
                    podcast_title = "Readcast", podcast_description = "A personal collection of narrated articles.",
                    podcast_language = "en", podcast_explicit = "false",
                    r2_account_id = "account-id", r2_bucket = "readcast-audio", worker_url = "https://audio.account.workers.dev")
   save_readcast_setup_settings(settings, config)
-  testthat::expect_identical(readcast_setup_settings(config), settings)
-  stored <- paste(readLines(file.path(config, "settings"), warn = FALSE), collapse = "\n")
+  testthat::expect_identical(readcast_setup_settings(config)[names(settings)], settings)
+  override_names <- c("CLIPPINGS_DIR", "READCAST_PAGES_URL", "R2_ACCOUNT_ID", "R2_BUCKET", "READCAST_WORKER_URL")
+  overrides <- Sys.getenv(override_names, unset = NA_character_)
+  on.exit(for (name in override_names) if (is.na(overrides[[name]])) Sys.unsetenv(name) else do.call(Sys.setenv, setNames(list(overrides[[name]]), name)), add = TRUE)
+  Sys.setenv(CLIPPINGS_DIR = "/env/clippings", READCAST_PAGES_URL = "https://env.github.io",
+    R2_ACCOUNT_ID = "env-account", R2_BUCKET = "env-bucket", READCAST_WORKER_URL = "https://env.workers.dev")
+  testthat::expect_identical(readcast_setup_settings(config)[names(settings)], settings)
+  stored <- paste(readLines(file.path(config, "config.yml"), warn = FALSE), collapse = "\n")
   testthat::expect_false(grepl("SECRET_ACCESS_KEY|access-secret", stored))
   testthat::expect_error(save_readcast_setup_settings(list(secret_access_key = "access-secret"), config), "Only non-secret")
   testthat::expect_error(save_readcast_setup_settings(list(worker_url = "https://user:secret@audio.account.workers.dev"), config), "Do not include credentials")
   testthat::expect_identical(setup_url_for_display("https://user:secret@audio.account.workers.dev"), "")
   testthat::expect_identical(setup_url_for_display("https://audio.account.workers.dev"), "https://audio.account.workers.dev")
+  testthat::expect_identical(readcast_setup_settings(config)$narration_cache_dir, "~/.cache/readcast/narrations")
+  testthat::expect_no_error(readcast_setup_settings(config))
+})
+
+testthat::test_that("legacy DCF settings migrate once into YAML with Clippings file precedence", {
+  config <- tempfile("readcast-config-")
+  dir.create(config)
+  write.dcf(data.frame(clippings_dir = "/old/from-dcf", github_pages_url = "https://reader.github.io/podcast",
+    podcast_title = "Legacy show", r2_account_id = "account", r2_bucket = "bucket"), file.path(config, "settings"))
+  writeLines("/new/from-cli", file.path(config, "clippings-dir"))
+  migrated <- readcast_setup_settings(config)
+  testthat::expect_identical(migrated$clippings_dir, "/new/from-cli")
+  testthat::expect_identical(migrated$github_pages_url, "https://reader.github.io/podcast")
+  testthat::expect_identical(migrated$podcast_title, "Legacy show")
+  testthat::expect_identical(migrated$r2_account_id, "account")
+  testthat::expect_true(file.exists(file.path(config, "config.yml")))
+  testthat::expect_false(file.exists(file.path(config, "settings")))
+  testthat::expect_false(file.exists(file.path(config, "clippings-dir")))
+  write.dcf(data.frame(podcast_title = "Later legacy edit"), file.path(config, "settings"))
+  writeLines("/later/clippings", file.path(config, "clippings-dir"))
+  testthat::expect_identical(readcast_setup_settings(config)$podcast_title, "Legacy show")
+  testthat::expect_identical(readcast_setup_settings(config)$clippings_dir, "/new/from-cli")
+})
+
+testthat::test_that("legacy and YAML credential keys are rejected", {
+  config <- tempfile("readcast-config-")
+  dir.create(config)
+  write.dcf(data.frame(openrouter_api_key = "must-not-migrate"), file.path(config, "settings"))
+  testthat::expect_error(readcast_setup_settings(config), "Credentials must be supplied")
+  unlink(file.path(config, "settings"))
+  writeLines("github_token: must-not-save", file.path(config, "config.yml"))
+  testthat::expect_error(readcast_setup_settings(config), "Credentials must be supplied")
+})
+
+testthat::test_that("YAML settings require unique named mappings", {
+  config <- tempfile("readcast-config-")
+  dir.create(config)
+  config_path <- file.path(config, "config.yml")
+  writeLines(c("- one", "- two"), config_path)
+  testthat::expect_error(readcast_setup_settings(config), "YAML mapping")
+  writeLines('"": value', config_path)
+  testthat::expect_error(readcast_setup_settings(config), "unique, non-empty setting names")
+  writeLines(c("podcast_title: First", "podcast_title: Second"), config_path)
+  testthat::expect_error(readcast_setup_settings(config), "unique mapping keys")
+})
+
+testthat::test_that("YAML URLs cannot contain credentials, queries, or fragments", {
+  config <- tempfile("readcast-config-")
+  dir.create(config)
+  config_path <- file.path(config, "config.yml")
+  for (name in c("github_pages_url", "worker_url", "hosted_worker_url")) {
+    writeLines(paste0(name, ': "https://user:secret@example.com/path?token=value#fragment"'), config_path)
+    testthat::expect_error(readcast_setup_settings(config), "Do not include credentials")
+  }
 })
 
 testthat::test_that("Clippings check reports a useful local result", {
@@ -29,7 +88,7 @@ testthat::test_that("Clippings check reports a useful local result", {
 
 testthat::test_that("connection checks fail before network access when configuration is absent", {
   testthat::expect_error(check_readcast_openrouter(""), "Set OPENROUTER_API_KEY")
-  testthat::expect_error(check_readcast_hosting("", "", "", "", ""), "R2_ACCOUNT_ID")
+  testthat::expect_error(check_readcast_hosting("", "", "", "", ""), "r2_account_id")
   testthat::expect_error(check_readcast_github_pages(""), "Enter the HTTPS URL")
   result <- setup_check_result(function() check_readcast_openrouter(""))
   testthat::expect_false(result$ok)

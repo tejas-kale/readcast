@@ -93,19 +93,21 @@ testthat::test_that("audio retention waits 30 days and protects URLs still in th
 })
 
 testthat::test_that("R2 deletion signs only a valid audio object key and reports remote failure", {
-  original <- Sys.getenv(c("R2_ACCOUNT_ID", "R2_BUCKET", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"), unset = NA_character_)
+  original <- Sys.getenv(c("R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"), unset = NA_character_)
   on.exit({
-    names(original) <- c("R2_ACCOUNT_ID", "R2_BUCKET", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY")
+    names(original) <- c("R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY")
     for (name in names(original)) if (is.na(original[[name]])) Sys.unsetenv(name) else do.call(Sys.setenv, setNames(list(original[[name]]), name))
   }, add = TRUE)
-  Sys.setenv(R2_ACCOUNT_ID = "account", R2_BUCKET = "bucket", R2_ACCESS_KEY_ID = "key", R2_SECRET_ACCESS_KEY = "secret")
+  Sys.setenv(R2_ACCESS_KEY_ID = "key", R2_SECRET_ACCESS_KEY = "secret")
+  config <- tempfile("readcast-config-")
+  save_readcast_setup_settings(list(r2_account_id = "account", r2_bucket = "bucket"), config)
   seen <- NULL
   fake <- function(request) { seen <<- request; httr2::response(status_code = 204L, url = request$url, method = request$method) }
-  testthat::expect_no_error(delete_r2_audio_object("audio/old-file.mp3", perform = fake))
+  testthat::expect_no_error(delete_r2_audio_object("audio/old-file.mp3", config_dir = config, perform = fake))
   testthat::expect_identical(seen$method, "DELETE")
   testthat::expect_match(seen$url, "/bucket/audio/old-file[.]mp3$")
-  testthat::expect_error(delete_r2_audio_object("../feed.xml", perform = fake), "invalid audio object key")
-  testthat::expect_error(delete_r2_audio_object("audio/forbidden.mp3", perform = function(request) httr2::response(status_code = 403L, url = request$url)), "retention entry remains")
+  testthat::expect_error(delete_r2_audio_object("../feed.xml", config_dir = config, perform = fake), "invalid audio object key")
+  testthat::expect_error(delete_r2_audio_object("audio/forbidden.mp3", config_dir = config, perform = function(request) httr2::response(status_code = 403L, url = request$url)), "retention entry remains")
 })
 
 testthat::test_that("remote cleanup reads the live Pages feed before invoking deletion", {
@@ -176,13 +178,10 @@ testthat::test_that("episode publication verifies audio, cover and the live RSS 
   cover_url <- "https://reader.github.io/podcast/cover.png"
   live_feed <- build_podcast_feed(list(episode), "https://reader.github.io/podcast", "Readcast", "Collection", "en", "false", cover_url)
   token_before <- Sys.getenv("GITHUB_TOKEN", unset = NA_character_)
-  pages_before <- Sys.getenv("READCAST_PAGES_URL", unset = NA_character_)
   on.exit({
     if (is.na(token_before)) Sys.unsetenv("GITHUB_TOKEN") else Sys.setenv(GITHUB_TOKEN = token_before)
-    if (is.na(pages_before)) Sys.unsetenv("READCAST_PAGES_URL") else Sys.setenv(READCAST_PAGES_URL = pages_before)
   }, add = TRUE)
   Sys.setenv(GITHUB_TOKEN = "test-token")
-  Sys.unsetenv("READCAST_PAGES_URL")
   calls <- character()
   feed_puts <- 0L
   uploads <- 0L

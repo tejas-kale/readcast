@@ -12,11 +12,12 @@ source(file.path(module_dir, "R", "publish_podcast.R"), local = TRUE)
 setup_settings <- readcast_setup_settings()
 clippings_dir <- path.expand(setup_settings$clippings_dir)
 clippings_dir <- if (nzchar(clippings_dir) && dir.exists(clippings_dir)) normalizePath(clippings_dir, mustWork = TRUE) else ""
-cache_dir <- path.expand(Sys.getenv("NARRATION_CACHE_DIR", "~/.cache/readcast/narrations"))
+cache_dir <- path.expand(setup_settings$narration_cache_dir)
 dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
 if (!dir.exists(cache_dir)) stop("Cannot create narration cache: ", cache_dir)
-cover_data_dir <- path.expand(Sys.getenv("READCAST_DATA_DIR", "~/.local/share/readcast"))
+cover_data_dir <- path.expand(setup_settings$data_dir)
 cover_files <- cover_paths(cover_data_dir)
+podcast_state_dir <- file.path(cover_data_dir, "podcast-episodes")
 cover_artwork_dir <- dirname(cover_files$candidate)
 dir.create(cover_artwork_dir, recursive = TRUE, showWarnings = FALSE)
 if (!dir.exists(cover_artwork_dir)) stop("Cannot create Readcast cover directory: ", cover_artwork_dir)
@@ -232,7 +233,7 @@ ui <- shiny::fluidPage(
   shiny::tags$div(class = "app-shell",
     shiny::tags$aside(class = "sidebar",
       shiny::tags$div(class = "brand", shiny::tags$span(class = "brand-mark", "♪"), "Readcast"),
-      shiny::actionButton("open_setup", "Set up Readcast", class = "setup-button"),
+      shiny::actionButton("open_setup", "Check connections", class = "setup-button"),
       shiny::tags$div(class = "eyebrow", "Library"),
       shiny::selectizeInput("article", "Article", choices = NULL, options = list(placeholder = "Search clippings…", maxOptions = 50, openOnFocus = TRUE)),
       shiny::tags$div(class = "eyebrow", "Narration"),
@@ -272,13 +273,13 @@ server <- function(input, output, session) {
   models <- discover_tts_models()
   state <- shiny::reactiveValues(job = NULL, status = "Choose an article to begin.", refresh = 0L)
   cover_state <- shiny::reactiveValues(status = "Edit the prompt, then generate a cover candidate.", refresh = 0L)
-  publish_state <- shiny::reactiveValues(status = "Publishing is optional; configure R2 to host an episode.", episode_status = "Confirm eligibility before the first publication of each clipping.", cleanup_status = "Cleanup checks the live feed and retains replaced audio for at least 30 days.")
+  publish_state <- shiny::reactiveValues(status = "Publishing is optional.", episode_status = "Confirm eligibility before the first publication of each clipping.", cleanup_status = "Cleanup checks the live feed and retains replaced audio for at least 30 days.")
   setup_state <- shiny::reactiveValues(
-    clippings = list(ok = FALSE, message = "Choose your Clippings export folder, then run this check."),
-    openrouter = list(ok = FALSE, message = "Set OPENROUTER_API_KEY in your shell environment, then run this check."),
-    hosting = list(ok = FALSE, message = "Set the R2 and Worker environment values, then run this check."),
-    github_access = list(ok = FALSE, message = "Set GITHUB_TOKEN with repository read access, then run this check."),
-    github_pages = list(ok = FALSE, message = "Enter your GitHub Pages site URL, then run this check.")
+    clippings = list(ok = FALSE, message = "Not checked."),
+    openrouter = list(ok = FALSE, message = "Not checked."),
+    hosting = list(ok = FALSE, message = "Not checked."),
+    github_access = list(ok = FALSE, message = "Not checked."),
+    github_pages = list(ok = FALSE, message = "Not checked.")
   )
   shiny::updateSelectizeInput(session, "article", choices = clippings, selected = character(0), server = TRUE)
   shiny::updateSelectInput(session, "model", choices = models, selected = if ("microsoft/mai-voice-2-flash" %in% models) "microsoft/mai-voice-2-flash" else unname(models[[1]]))
@@ -290,7 +291,7 @@ server <- function(input, output, session) {
   selected_path <- shiny::reactive({
     shiny::req(input$article)
     root <- active_clippings_dir()
-    shiny::validate(shiny::need(nzchar(root), "Choose a Clippings directory in Set up Readcast."))
+    shiny::validate(shiny::need(nzchar(root), "Readcast cannot find a Clippings folder. See README.md for configuration guidance."))
     path <- normalizePath(file.path(root, input$article), mustWork = TRUE)
     shiny::validate(shiny::need(startsWith(path, paste0(root, "/")) && grepl("\\.md$", path, ignore.case = TRUE), "Select a Markdown clipping from the library."))
     path
@@ -328,7 +329,7 @@ server <- function(input, output, session) {
       publish_state$episode_status <- "Publication pending: choose a model and voice to identify the episode."
       return()
     }
-    saved <- read_podcast_episode(selected_path(), input$model, input$voice)
+    saved <- read_podcast_episode(selected_path(), input$model, input$voice, podcast_state_dir)
     status <- podcast_episode_status(saved)
     publish_state$episode_status <- switch(status,
       pending = "Publication pending: no audio has been published for this episode.",
@@ -337,83 +338,35 @@ server <- function(input, output, session) {
   })
 
   shiny::observeEvent(input$open_setup, {
-    settings <- readcast_setup_settings()
     shiny::showModal(shiny::modalDialog(
-      title = "Set up Readcast",
-      size = "l", easyClose = TRUE,
-      shiny::p("Set up the local library and optional narration publishing connections. Every Check button can be run again after changing configuration. Checks only read configuration or contact the service; they never generate or publish audio and never create cloud resources."),
-      shiny::tags$details(open = NA,
-        shiny::tags$summary("One-time setup guide"),
-        shiny::tags$ol(
-          shiny::tags$li("Choose the folder containing your exported Markdown Clippings. This is saved locally in ~/.config/readcast/settings; CLIPPINGS_DIR still takes precedence when set."),
-          shiny::tags$li("For narration, create an OpenRouter API key and expose it as OPENROUTER_API_KEY through your shell or secret manager. Readcast never asks to display or save the key."),
-          shiny::tags$li("For public episode hosting, create a dedicated public GitHub repository for the Pages site, enable Pages from the root of its main branch, and use the resulting https://<account>.github.io/<repository>/ URL. Keep this separate from private code."),
-          shiny::tags$li("In Cloudflare, create the private R2 bucket readcast-audio in Standard storage. Create an R2 token with Object Read & Write access, then deploy the bundled Worker with npx wrangler deploy from the worker directory and bind AUDIO_BUCKET to that bucket."),
-          shiny::tags$li("Set R2_ACCOUNT_ID, R2_BUCKET, READCAST_WORKER_URL, R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY in your shell or secret manager. The Worker URL must be its permanent https://<worker>.<account>.workers.dev origin. Keep that URL unchanged after publishing."),
-          shiny::tags$li("Set GITHUB_TOKEN with repository contents write access to the dedicated Pages repository. Readcast uses it to publish the feed and cover; it is never shown or saved."),
-          shiny::tags$li("Save non-secret site and storage values below. Secret values are read only from the environment; none are shown or written to Readcast configuration.")),
-        shiny::p("Provisioning is a one-time manual step. Readcast does not create repositories, buckets, tokens or Workers.")),
-      shiny::textInput("setup_clippings", "Clippings directory", value = settings$clippings_dir, placeholder = "~/Documents/Clippings"),
+      title = "Connection checks", size = "m", easyClose = TRUE,
+      shiny::p("These checks use the settings in ~/.config/readcast/config.yml and credentials from your environment. They do not generate or publish audio or create cloud resources."),
       shiny::div(class = "setup-check", shiny::tags$h4("Clippings"), shiny::actionButton("check_setup_clippings", "Check Clippings"), shiny::tags$p(class = "setup-result", shiny::textOutput("setup_clippings_result"))),
-      shiny::div(class = "setup-check", shiny::tags$h4("OpenRouter"), shiny::p("Reads OPENROUTER_API_KEY from the environment; the key is never displayed."), shiny::actionButton("check_setup_openrouter", "Check OpenRouter"), shiny::tags$p(class = "setup-result", shiny::textOutput("setup_openrouter_result"))),
-      shiny::textInput("setup_r2_account", "R2 account ID", value = settings$r2_account_id),
-      shiny::textInput("setup_r2_bucket", "R2 bucket name", value = settings$r2_bucket),
-      shiny::textInput("setup_worker_url", "Worker URL", value = setup_url_for_display(settings$worker_url), placeholder = "https://readcast.<account>.workers.dev"),
-      shiny::div(class = "setup-check", shiny::tags$h4("R2 and Worker"), shiny::p("Readcast checks bucket listing permission and sends a HEAD request for a deliberately missing object. Access keys are read from the environment and never displayed."), shiny::actionButton("check_setup_hosting", "Check R2 and Worker"), shiny::tags$p(class = "setup-result", shiny::textOutput("setup_hosting_result"))),
-      shiny::textInput("setup_github_url", "GitHub Pages site URL", value = setup_url_for_display(settings$github_pages_url), placeholder = "https://<account>.github.io/<repository>/"),
-      shiny::textInput("setup_podcast_title", "Show title", value = settings$podcast_title),
-      shiny::textAreaInput("setup_podcast_description", "Show description", value = settings$podcast_description, rows = 2),
-      shiny::textInput("setup_podcast_language", "Show language", value = settings$podcast_language),
-      shiny::selectInput("setup_podcast_explicit", "Explicit content", choices = c("No" = "false", "Yes" = "true"), selected = settings$podcast_explicit),
-      shiny::div(class = "setup-check", shiny::tags$h4("GitHub repository access"), shiny::p("Checks GITHUB_TOKEN against the repository API using a read-only request."), shiny::actionButton("check_setup_github_access", "Check GitHub repository access"), shiny::tags$p(class = "setup-result", shiny::textOutput("setup_github_access_result"))),
-      shiny::div(class = "setup-check", shiny::tags$h4("GitHub Pages site"), shiny::p("Checks the public site URL independently of the repository token."), shiny::actionButton("check_setup_github_pages", "Check GitHub Pages site"), shiny::tags$p(class = "setup-result", shiny::textOutput("setup_github_pages_result"))),
-      footer = shiny::tagList(shiny::actionButton("save_setup", "Save settings", class = "btn-primary"), shiny::modalButton("Close")))
-    )
-  })
-
-  shiny::observeEvent(input$save_setup, {
-    directory <- path.expand(trimws(input$setup_clippings %||% ""))
-    if (nzchar(directory) && !dir.exists(directory)) {
-      shiny::showNotification("That Clippings directory does not exist. Correct it before saving.", type = "error")
-      return()
-    }
-    directory <- if (nzchar(directory)) normalizePath(directory, mustWork = TRUE) else ""
-    save_readcast_setup_settings(list(
-      clippings_dir = directory,
-      github_pages_url = input$setup_github_url %||% "",
-      podcast_title = input$setup_podcast_title %||% "Readcast",
-      podcast_description = input$setup_podcast_description %||% "A personal collection of narrated articles.",
-      podcast_language = input$setup_podcast_language %||% "en",
-      podcast_explicit = input$setup_podcast_explicit %||% "false",
-      r2_account_id = input$setup_r2_account %||% "",
-      r2_bucket = input$setup_r2_bucket %||% "",
-      worker_url = input$setup_worker_url %||% ""
-    ))
-    active_clippings_dir(directory)
-    if (nzchar(directory)) {
-      shiny::addResourcePath("clipping-assets", directory)
-      shiny::updateSelectizeInput(session, "article", choices = list_clippings(directory), selected = character(0), server = TRUE)
-    } else shiny::updateSelectizeInput(session, "article", choices = character(), selected = character(), server = TRUE)
-    shiny::showNotification("Saved local setup values. Environment variables override matching values when the app restarts.", type = "message")
+      shiny::div(class = "setup-check", shiny::tags$h4("OpenRouter"), shiny::actionButton("check_setup_openrouter", "Check OpenRouter"), shiny::tags$p(class = "setup-result", shiny::textOutput("setup_openrouter_result"))),
+      shiny::div(class = "setup-check", shiny::tags$h4("R2 and Worker"), shiny::actionButton("check_setup_hosting", "Check R2 and Worker"), shiny::tags$p(class = "setup-result", shiny::textOutput("setup_hosting_result"))),
+      shiny::div(class = "setup-check", shiny::tags$h4("GitHub repository"), shiny::actionButton("check_setup_github_access", "Check GitHub repository access"), shiny::tags$p(class = "setup-result", shiny::textOutput("setup_github_access_result"))),
+      shiny::div(class = "setup-check", shiny::tags$h4("GitHub Pages"), shiny::actionButton("check_setup_github_pages", "Check GitHub Pages site"), shiny::tags$p(class = "setup-result", shiny::textOutput("setup_github_pages_result"))),
+      footer = shiny::modalButton("Close")))
   })
 
   shiny::observeEvent(input$check_setup_clippings, {
-    setup_state$clippings <- setup_check_result(function() check_readcast_clippings(input$setup_clippings))
+    setup_state$clippings <- setup_check_result(function() check_readcast_clippings(readcast_setup_settings()$clippings_dir))
   })
   shiny::observeEvent(input$check_setup_openrouter, {
     setup_state$openrouter <- setup_check_result(check_readcast_openrouter)
   })
   shiny::observeEvent(input$check_setup_hosting, {
-    setup_state$hosting <- setup_check_result(function() check_readcast_hosting(
-      input$setup_r2_account, input$setup_r2_bucket,
-      Sys.getenv("R2_ACCESS_KEY_ID", unset = ""), Sys.getenv("R2_SECRET_ACCESS_KEY", unset = ""), input$setup_worker_url
-    ))
+    setup_state$hosting <- setup_check_result(function() {
+      settings <- readcast_setup_settings()
+      check_readcast_hosting(settings$r2_account_id, settings$r2_bucket,
+        Sys.getenv("R2_ACCESS_KEY_ID", unset = ""), Sys.getenv("R2_SECRET_ACCESS_KEY", unset = ""), settings$worker_url)
+    })
   })
   shiny::observeEvent(input$check_setup_github_access, {
-    setup_state$github_access <- setup_check_result(function() check_readcast_github_access(input$setup_github_url))
+    setup_state$github_access <- setup_check_result(function() check_readcast_github_access(readcast_setup_settings()$github_pages_url))
   })
   shiny::observeEvent(input$check_setup_github_pages, {
-    setup_state$github_pages <- setup_check_result(function() check_readcast_github_pages(input$setup_github_url))
+    setup_state$github_pages <- setup_check_result(function() check_readcast_github_pages(readcast_setup_settings()$github_pages_url))
   })
   output$cover_candidate <- shiny::renderUI({
     cover_state$refresh
@@ -476,11 +429,11 @@ server <- function(input, output, session) {
 
   publish_episode_now <- function(eligible = TRUE) {
     path <- selected_path()
-    episode <- read_podcast_episode(path, input$model, input$voice)
+    episode <- read_podcast_episode(path, input$model, input$voice, podcast_state_dir)
     if (is.null(episode)) {
       item <- article()
       episode <- confirm_podcast_eligibility(path, eligible, input$episode_title,
-        item$description, input$model, input$voice)
+        item$description, input$model, input$voice, podcast_state_dir)
     } else if (!identical(episode$eligible, "true")) {
       publish_state$episode_status <- "This clipping was marked ineligible. Its decision is saved."
       return(invisible(NULL))
@@ -513,7 +466,7 @@ server <- function(input, output, session) {
   shiny::observeEvent(input$confirm_audio_cleanup, {
     shiny::removeModal()
     tryCatch({
-      result <- cleanup_published_podcast_audio()
+      result <- cleanup_published_podcast_audio(data_dir = podcast_state_dir)
       publish_state$cleanup_status <- paste0("Audio cleanup complete. Deleted ", length(result$deleted), " object(s); ", length(result$failed), " deletion(s) will be retried next time.")
       shiny::showNotification(publish_state$cleanup_status, type = if (length(result$failed)) "warning" else "message")
     }, error = function(error) {
@@ -525,13 +478,13 @@ server <- function(input, output, session) {
   shiny::observeEvent(input$publish_episode, {
     path <- tryCatch(selected_path(), error = function(error) NULL)
     if (is.null(path)) return()
-    episode <- read_podcast_episode(path, input$model, input$voice)
-    if (is.null(episode) && is.null(read_podcast_eligibility(path))) {
+    episode <- read_podcast_episode(path, input$model, input$voice, podcast_state_dir)
+    if (is.null(episode) && is.null(read_podcast_eligibility(path, podcast_state_dir))) {
       shiny::showModal(shiny::modalDialog(title = "Confirm podcast eligibility",
         shiny::p("Is this clipping eligible for podcast publication? Confirm that you have the rights to publish its narration and metadata."),
         footer = shiny::tagList(shiny::actionButton("confirm_episode_eligible", "Yes, publish this clipping"), shiny::actionButton("deny_episode_eligible", "No, mark ineligible"), shiny::modalButton("Cancel")), easyClose = TRUE))
     } else tryCatch(publish_episode_now(), error = function(error) {
-      saved <- read_podcast_episode(selected_path(), input$model, input$voice)
+      saved <- read_podcast_episode(selected_path(), input$model, input$voice, podcast_state_dir)
       publish_state$episode_status <- if (identical(podcast_episode_status(saved), "recoverable")) {
         paste("Publication recoverable: uploaded audio is saved. Retry to finish publishing the feed.", conditionMessage(error))
       } else paste("Publication pending:", conditionMessage(error))
@@ -540,7 +493,7 @@ server <- function(input, output, session) {
   })
   shiny::observeEvent(input$confirm_episode_eligible, {
     tryCatch(publish_episode_now(), error = function(error) {
-      saved <- read_podcast_episode(selected_path(), input$model, input$voice)
+      saved <- read_podcast_episode(selected_path(), input$model, input$voice, podcast_state_dir)
       publish_state$episode_status <- if (identical(podcast_episode_status(saved), "recoverable")) {
         paste("Publication recoverable: uploaded audio is saved. Retry to finish publishing the feed.", conditionMessage(error))
       } else paste("Publication pending:", conditionMessage(error))
@@ -551,7 +504,7 @@ server <- function(input, output, session) {
     tryCatch({
       item <- article()
       confirm_podcast_eligibility(selected_path(), FALSE, input$episode_title,
-        item$description, input$model, input$voice)
+        item$description, input$model, input$voice, podcast_state_dir)
       publish_state$episode_status <- "This clipping was marked ineligible. Its decision is saved."
     }, error = function(error) {
       publish_state$episode_status <- conditionMessage(error)
@@ -593,7 +546,7 @@ server <- function(input, output, session) {
       return()
     }
     if (!nzchar(Sys.getenv("OPENROUTER_API_KEY", unset = ""))) {
-      shiny::showNotification("Set OPENROUTER_API_KEY before generating audio.", type = "error", duration = NULL)
+      shiny::showNotification("Narration is unavailable. See README.md for configuration guidance.", type = "error", duration = NULL)
       return()
     }
     if (!nzchar(Sys.which("ffmpeg"))) {

@@ -1,33 +1,28 @@
 readcast_worker_url <- function(config_dir = path.expand("~/.config/readcast")) {
-  settings <- if (exists("readcast_setup_settings", mode = "function")) readcast_setup_settings(config_dir) else list(worker_url = "")
-  worker_url <- trimws(Sys.getenv("READCAST_WORKER_URL", unset = settings$worker_url))
-  if (!nzchar(worker_url)) stop("Set READCAST_WORKER_URL to the permanent https://<worker>.<account>.workers.dev address.", call. = FALSE)
+  settings <- if (exists("readcast_setup_settings", mode = "function")) readcast_setup_settings(config_dir) else list(worker_url = "", hosted_worker_url = "")
+  worker_url <- trimws(settings$worker_url)
+  if (!nzchar(worker_url)) stop("Set worker_url in ~/.config/readcast/config.yml to the permanent https://<worker>.<account>.workers.dev address.", call. = FALSE)
   parsed <- httr2::url_parse(worker_url)
   if (!identical(parsed$scheme, "https") || !grepl("^[a-z0-9-]+\\.[a-z0-9-]+\\.workers\\.dev$", parsed$hostname)) {
-    stop("READCAST_WORKER_URL must be an HTTPS workers.dev hostname, without a path.", call. = FALSE)
+    stop("worker_url in config.yml must be an HTTPS workers.dev hostname, without a path.", call. = FALSE)
   }
-  if (!is.null(parsed$path) && nzchar(parsed$path) && parsed$path != "/") stop("READCAST_WORKER_URL must contain only the Worker origin.", call. = FALSE)
+  if (!is.null(parsed$path) && nzchar(parsed$path) && parsed$path != "/") stop("worker_url in config.yml must contain only the Worker origin.", call. = FALSE)
   dir.create(config_dir, recursive = TRUE, showWarnings = FALSE)
-  lock_path <- file.path(config_dir, "worker-url")
-  if (file.exists(lock_path)) {
-    locked <- trimws(readLines(lock_path, warn = FALSE, n = 1L))
-    if (!identical(sub("/$", "", worker_url), sub("/$", "", locked))) {
-      stop("READCAST_WORKER_URL differs from the address already used for hosted audio (", locked, "). Restore that Worker address; published audio URLs depend on it.", call. = FALSE)
-    }
+  legacy_lock_path <- file.path(config_dir, "worker-url")
+  locked <- settings$hosted_worker_url
+  if (!nzchar(locked) && file.exists(legacy_lock_path)) locked <- trimws(readLines(legacy_lock_path, warn = FALSE, n = 1L))
+  if (nzchar(locked) && !identical(sub("/$", "", worker_url), sub("/$", "", locked))) {
+    stop("worker_url differs from the address already used for hosted audio (", locked, "). Restore that Worker address; published audio URLs depend on it.", call. = FALSE)
   }
-  list(url = sub("/$", "", worker_url), lock_path = lock_path)
+  list(url = sub("/$", "", worker_url), config_dir = config_dir,
+       legacy_lock_path = if (file.exists(legacy_lock_path)) legacy_lock_path else NULL)
 }
 
-upload_cached_audio <- function(mp3_path, worker_url = NULL, config_dir = path.expand("~/.config/readcast"), object_key = NULL) {
-  if (is.null(worker_url)) hosting <- readcast_worker_url(config_dir) else {
-    old <- Sys.getenv("READCAST_WORKER_URL", unset = "")
-    on.exit(Sys.setenv(READCAST_WORKER_URL = old), add = TRUE)
-    Sys.setenv(READCAST_WORKER_URL = worker_url)
-    hosting <- readcast_worker_url(config_dir)
-  }
+upload_cached_audio <- function(mp3_path, config_dir = path.expand("~/.config/readcast"), object_key = NULL) {
+  hosting <- readcast_worker_url(config_dir)
   settings <- if (exists("readcast_setup_settings", mode = "function")) readcast_setup_settings(config_dir) else list(r2_account_id = "", r2_bucket = "")
-  account_id <- Sys.getenv("R2_ACCOUNT_ID", unset = settings$r2_account_id)
-  bucket <- Sys.getenv("R2_BUCKET", unset = settings$r2_bucket)
+  account_id <- settings$r2_account_id
+  bucket <- settings$r2_bucket
   access_key <- Sys.getenv("R2_ACCESS_KEY_ID", unset = "")
   secret_key <- Sys.getenv("R2_SECRET_ACCESS_KEY", unset = "")
   missing <- c(if (!nzchar(account_id)) "R2_ACCOUNT_ID", if (!nzchar(bucket)) "R2_BUCKET",
@@ -57,15 +52,16 @@ upload_cached_audio <- function(mp3_path, worker_url = NULL, config_dir = path.e
     if (grepl("R2 rejected", conditionMessage(error), fixed = TRUE)) stop(error)
     stop("Could not upload audio to R2: ", conditionMessage(error), ". Check your network and R2 credentials, then retry.", call. = FALSE)
   })
-  writeLines(hosting$url, hosting$lock_path, useBytes = TRUE)
+  save_readcast_setup_settings(list(hosted_worker_url = hosting$url), hosting$config_dir)
+  if (!is.null(hosting$legacy_lock_path)) unlink(hosting$legacy_lock_path)
   list(url = paste0(hosting$url, "/", key), key = key, size = file.info(mp3_path)$size)
 }
 
 delete_r2_audio_object <- function(object_key, config_dir = path.expand("~/.config/readcast"), perform = httr2::req_perform) {
   if (length(object_key) != 1L || is.na(object_key) || !grepl("^audio/[A-Za-z0-9_-]+[.]mp3$", object_key)) stop("Refusing to delete an invalid audio object key.", call. = FALSE)
   settings <- if (exists("readcast_setup_settings", mode = "function")) readcast_setup_settings(config_dir) else list(r2_account_id = "", r2_bucket = "")
-  account_id <- Sys.getenv("R2_ACCOUNT_ID", unset = settings$r2_account_id)
-  bucket <- Sys.getenv("R2_BUCKET", unset = settings$r2_bucket)
+  account_id <- settings$r2_account_id
+  bucket <- settings$r2_bucket
   access_key <- Sys.getenv("R2_ACCESS_KEY_ID", unset = "")
   secret_key <- Sys.getenv("R2_SECRET_ACCESS_KEY", unset = "")
   missing <- c(if (!nzchar(account_id)) "R2_ACCOUNT_ID", if (!nzchar(bucket)) "R2_BUCKET",
