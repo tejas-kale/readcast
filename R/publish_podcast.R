@@ -268,6 +268,30 @@ podcast_feed_candidates <- function(saved_episodes, current_episode, remote_feed
   previously_complete
 }
 
+with_pages_visibility_retry <- function(check, perform, timeout = 120) {
+  # Injected performers are used by callers and tests to model one request.
+  # Keep that path synchronous; only real HTTP calls wait for Pages propagation.
+  if (!identical(perform, httr2::req_perform)) return(check())
+  started <- Sys.time()
+  delay <- 2
+  repeat {
+    result <- tryCatch(list(value = check()), error = function(error) list(error = error))
+    if (is.null(result$error)) return(result$value)
+    message <- conditionMessage(result$error)
+    retryable <- grepl("HTTP (404|408|429|5[0-9][0-9])", message) ||
+      grepl("does not contain the expected episode GUID", message, fixed = TRUE) ||
+      grepl("did not return a valid RSS 2.0 feed", message, fixed = TRUE) ||
+      grepl("does not match the hosted audio", message, fixed = TRUE) ||
+      grepl("does not reference the approved cover", message, fixed = TRUE) ||
+      grepl("Public resource has unexpected content type", message, fixed = TRUE) ||
+      grepl("Public resource has unexpected byte length", message, fixed = TRUE)
+    remaining <- timeout - as.numeric(difftime(Sys.time(), started, units = "secs"))
+    if (!retryable || remaining <= 0) stop(result$error)
+    Sys.sleep(min(delay, remaining))
+    delay <- min(delay * 2, 10)
+  }
+}
+
 verify_public_resource <- function(url, expected_type = NULL, expected_length = NULL, perform = httr2::req_perform) {
   response <- httr2::request(url) |>
     httr2::req_method("HEAD") |>
@@ -356,7 +380,8 @@ publish_podcast_episode <- function(clipping_path, mp3_path, approved_cover, epi
   cover_path <- "cover.png"
   publish_pages_file(repository$owner, repository$repository, cover_path, readBin(approved_cover, "raw", n = file.info(approved_cover)$size), token, perform)
   cover_url <- paste0(pages_url, "/", cover_path)
-  verify_public_resource(cover_url, expected_type = "image/png", perform = perform)
+  cover_size <- file.info(approved_cover)$size
+  with_pages_visibility_retry(function() verify_public_resource(cover_url, expected_type = "image/png", expected_length = cover_size, perform = perform), perform)
   episodes <- list.files(data_dir, pattern = "\\.dcf$", full.names = TRUE)
   saved <- lapply(episodes, function(path) as.list(read.dcf(path)[1L, , drop = TRUE]))
   same <- vapply(saved, function(item) identical(item$guid, episode$guid), logical(1))
@@ -369,7 +394,7 @@ publish_podcast_episode <- function(clipping_path, mp3_path, approved_cover, epi
     explicit = settings$podcast_explicit, cover_url = cover_url)
   publish_pages_file(repository$owner, repository$repository, "feed.xml", charToRaw(feed), token, perform, current = feed_current$response)
   feed_url <- paste0(pages_url, "/feed.xml")
-  verify_live_podcast_feed(feed_url, episode, published_cover_url, perform)
+  with_pages_visibility_retry(function() verify_live_podcast_feed(feed_url, episode, published_cover_url, perform), perform)
   if (nzchar(episode$replacement_old_url %||% "") && !identical(episode$replacement_old_url, episode$audio_url)) {
     entries <- read_podcast_retention(data_dir)
     already_retired <- any(vapply(entries, function(entry) identical(entry$url, episode$replacement_old_url), logical(1)))
