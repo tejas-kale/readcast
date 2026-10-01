@@ -21,7 +21,8 @@ def _config(ctx: click.Context) -> dict:
     return ctx.obj["config"]
 
 
-def _narrate(config: dict, path: Path, state: dict, model: str | None, voice: str | None) -> Path:
+def _narrate(config: dict, path: Path, state: dict, model: str | None, voice: str | None,
+             renarrate: bool = False) -> Path:
     from .narration import default_voice_for, narrate_chunks, split_article
 
     script = path / "script.txt"
@@ -33,7 +34,7 @@ def _narrate(config: dict, path: Path, state: dict, model: str | None, voice: st
     # A model or voice change alters all dependent audio and upload records.
     fingerprint = hashlib.sha256(json.dumps([state["script_hash"], selected_model, selected_voice]).encode()).hexdigest()
     output = path / "episode.mp3"
-    if state.get("narration_hash") == fingerprint and output.is_file() and output.stat().st_size:
+    if not renarrate and state.get("narration_hash") == fingerprint and output.is_file() and output.stat().st_size:
         if state.get("mp3_hash") == hashlib.sha256(output.read_bytes()).hexdigest():
             click.echo("Using completed narration", err=True)
             return output
@@ -48,7 +49,8 @@ def _narrate(config: dict, path: Path, state: dict, model: str | None, voice: st
     output = narrate_chunks(
         chunks, output, model=selected_model, voice=selected_voice,
         cache_dir=config["narration_cache_dir"], pauses_after=pauses_after,
-        progress=lambda done, total: click.echo(f"Narrated chunk {done}/{total}", err=True),
+        force=renarrate,
+        progress=lambda done, total: click.echo(f"Completed chunk {done}/{total}", err=True),
     )
     state.update(narration_hash=fingerprint, mp3_hash=hashlib.sha256(output.read_bytes()).hexdigest(),
                  mp3_path=str(output), model=selected_model, voice=selected_voice)
@@ -132,13 +134,14 @@ def prepare(ctx: click.Context, reference: str | None, source_id: str | None):
 @click.argument("reference")
 @click.option("--model", help="OpenRouter speech model for this narration")
 @click.option("--voice", help="Voice for this narration")
+@click.option("--renarrate", is_flag=True, help="Generate fresh speech for every chunk")
 @click.pass_context
-def narrate(ctx: click.Context, reference: str, model: str | None, voice: str | None):
+def narrate(ctx: click.Context, reference: str, model: str | None, voice: str | None, renarrate: bool):
     """Create an MP3 from a prepared episode or Markdown path."""
     try:
         config = _config(ctx)
         path, state = prepare_workspace(config, reference)
-        click.echo(_narrate(config, path, state, model, voice))
+        click.echo(_narrate(config, path, state, model, voice, renarrate))
     except Exception as error:
         raise click.ClickException(str(error)) from error
 
@@ -176,10 +179,14 @@ def publish(ctx: click.Context, reference: str, replace: bool):
 @click.option("--model", help="OpenRouter speech model for this run")
 @click.option("--voice", help="Voice for this run")
 @click.option("--replace", is_flag=True, help="Update an existing published RSS item")
+@click.option("--renarrate", is_flag=True, help="Generate fresh speech for every chunk")
 @click.pass_context
-def run(ctx: click.Context, reference: str | None, source_id: str | None, model: str | None, voice: str | None, replace: bool):
+def run(ctx: click.Context, reference: str | None, source_id: str | None, model: str | None, voice: str | None,
+        replace: bool, renarrate: bool):
     """Prepare, narrate, upload and publish one Markdown article."""
     try:
+        if renarrate and not replace:
+            raise ValueError("--renarrate requires --replace when using run")
         config = _config(ctx)
         markdown = _read_markdown_input(reference, source_id)
         if markdown is not None:
@@ -204,7 +211,7 @@ def run(ctx: click.Context, reference: str | None, source_id: str | None, model:
         click.echo("Preparing Markdown", err=True)
         if markdown is None:
             path, state = prepare_workspace(config, reference)
-        _narrate(config, path, state, model, voice)
+        _narrate(config, path, state, model, voice, renarrate)
         click.echo(_publish(config, path, state, replace))
     except Exception as error:
         raise click.ClickException(str(error)) from error

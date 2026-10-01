@@ -201,6 +201,7 @@ def narrate_chunks(
     chunks: Sequence[str], output_path: Path | str, *, model: str = DEFAULT_MODEL,
     voice: str | None = None, cache_dir: Path | str | None = None,
     pauses_after: Sequence[int] = (), pause_seconds: float = 0.55,
+    force: bool = False,
     progress: Callable[[int, int], object] | None = None,
 ) -> Path:
     """Generate and assemble chunks, resuming valid per-chunk and MP3 caches.
@@ -208,6 +209,7 @@ def narrate_chunks(
     ``pauses_after`` contains one-based chunk indices after which silence is added.
     Cache keys include text, model, voice, chunk order, and assembly options, so
     changed inputs naturally invalidate only affected chunks and final outputs.
+    ``force`` requests fresh speech for every chunk, ignoring both caches.
     """
     if not chunks or any(not isinstance(chunk, str) or not chunk.strip() for chunk in chunks):
         raise ValueError("Cannot narrate empty chunks")
@@ -222,18 +224,36 @@ def narrate_chunks(
                                    "chunks": chunk_keys, "pauses_after": sorted(pauses_after),
                                    "pause_seconds": pause_seconds}, sort_keys=True))
     final_cache = root / "mp3" / f"{cache_key}.mp3"
+    retry_file = output.with_name(output.name + ".renarrate.json")
     output.parent.mkdir(parents=True, exist_ok=True)
-    if final_cache.is_file() and final_cache.stat().st_size:
+    if not force and final_cache.is_file() and final_cache.stat().st_size:
         final_cache.touch()
         shutil.copyfile(final_cache, output)
+        retry_file.unlink(missing_ok=True)
         return output
+
+    completed: dict[str, str] = {}
+    if force:
+        if retry_file.is_file():
+            try:
+                previous = json.loads(retry_file.read_text(encoding="utf-8"))
+                if previous.get("key") == cache_key and isinstance(previous.get("completed"), dict):
+                    completed = previous["completed"]
+            except (ValueError, AttributeError):
+                pass
+        _atomic_bytes(retry_file, json.dumps({"key": cache_key, "completed": completed}).encode())
 
     paths: list[Path] = []
     for index, (chunk, key) in enumerate(zip(chunks, chunk_keys), start=1):
         path = chunk_dir / f"{key}.mp3"
-        if not path.is_file() or not path.stat().st_size:
+        resumed = (force and path.is_file() and path.stat().st_size > 0
+                   and completed.get(str(index)) == hashlib.sha256(path.read_bytes()).hexdigest())
+        if not resumed and (force or not path.is_file() or not path.stat().st_size):
             audio = generate_chunk(chunk, model, selected_voice)
             _atomic_bytes(path, audio)
+            if force:
+                completed[str(index)] = hashlib.sha256(audio).hexdigest()
+                _atomic_bytes(retry_file, json.dumps({"key": cache_key, "completed": completed}).encode())
         else:
             path.touch()
         paths.append(path)
@@ -246,4 +266,5 @@ def narrate_chunks(
         data = assembled.read_bytes()
         _atomic_bytes(final_cache, data)
         _atomic_bytes(output, data)
+    retry_file.unlink(missing_ok=True)
     return output

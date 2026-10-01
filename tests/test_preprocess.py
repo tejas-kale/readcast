@@ -31,7 +31,7 @@ She paid $450 and saved 25%.
     metadata, script = preprocess_markdown(markdown)
     assert metadata["title"] == "A story"
     assert "By Jane Writer" in script
-    assert "Published one March twenty twelve" in script
+    assert "Published first March twenty twelve" in script
     assert "The first section." in script
     assert "The big theme is coding agents. They write artefacts." in script
     assert "sites plugin helps" in script

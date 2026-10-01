@@ -73,7 +73,7 @@ def _source_url(metadata: dict) -> str:
     return value
 
 
-def _parse_stdin_markdown(raw: bytes, source_id: str | None) -> tuple[dict, str, str, str]:
+def _parse_stdin_markdown(config: dict, raw: bytes, source_id: str | None) -> tuple[dict, str, str, str]:
     if source_id is not None and not source_id.strip():
         raise ValueError("--source-id must not be empty")
     if not raw.strip():
@@ -82,7 +82,7 @@ def _parse_stdin_markdown(raw: bytes, source_id: str | None) -> tuple[dict, str,
         markdown = raw.decode("utf-8")
     except UnicodeDecodeError as error:
         raise ValueError("Markdown must be UTF-8") from error
-    metadata, script = preprocess_markdown(markdown)
+    metadata, script = preprocess_markdown(markdown, config.get("pronunciations_file"))
     source_url = _source_url(metadata)
     if source_id and source_url:
         raise ValueError("--source-id cannot be used when Markdown frontmatter contains a source URL")
@@ -92,7 +92,7 @@ def _parse_stdin_markdown(raw: bytes, source_id: str | None) -> tuple[dict, str,
 
 def find_stdin_episode(config: dict, raw: bytes, source_id: str | None = None) -> tuple[Path, dict] | None:
     """Find an existing stdin episode without refreshing or mutating its workspace."""
-    _, _, source_url, _ = _parse_stdin_markdown(raw, source_id)
+    _, _, source_url, _ = _parse_stdin_markdown(config, raw, source_id)
     return next(((path, state) for path, state in all_states(config)
                  if (source_url and state.get("source_url") == source_url)
                  or (source_id and state.get("source_id") == source_id)
@@ -106,7 +106,7 @@ def prepare(config: dict, reference: str | None = None, *, raw_input: bytes | No
     if raw_input is not None:
         original = ""
         raw = raw_input
-        metadata, script, source_url, identity = _parse_stdin_markdown(raw, source_id)
+        metadata, script, source_url, identity = _parse_stdin_markdown(config, raw, source_id)
         old = next(((path, state) for path, state in all_states(config)
                     if (source_url and state.get("source_url") == source_url)
                     or (source_id and state.get("source_id") == source_id)
@@ -142,7 +142,7 @@ def prepare(config: dict, reference: str | None = None, *, raw_input: bytes | No
         markdown = raw.decode("utf-8")
     except UnicodeDecodeError as error:
         raise ValueError("Markdown must be UTF-8") from error
-    metadata, script = preprocess_markdown(markdown)
+    metadata, script = preprocess_markdown(markdown, config.get("pronunciations_file"))
     source_url = _source_url(metadata)
     by_path = next(((path, state) for path, state in all_states(config) if state.get("source_path") == original), None)
     by_url = next(((path, state) for path, state in all_states(config) if source_url and state.get("source_url") == source_url), None)

@@ -1,6 +1,7 @@
 """Deterministic speech cleanup carried over from the R application."""
 
 from datetime import date, datetime
+from pathlib import Path
 import re
 import unicodedata
 
@@ -8,6 +9,39 @@ import yaml
 
 
 FRONTMATTER = re.compile(r"\A---[ \t]*\n(.*?)\n---[ \t]*(?:\n|\Z)", re.S)
+PRONUNCIATIONS_FILE = Path(__file__).with_name("pronunciations.yml")
+
+
+def load_pronunciations(path: Path | str | None = None) -> dict[str, str]:
+    mapping = {}
+    for file in (PRONUNCIATIONS_FILE, Path(path).expanduser() if path else None):
+        if file is None:
+            continue
+        if file == PRONUNCIATIONS_FILE and not file.exists():
+            raise FileNotFoundError(f"Missing packaged pronunciation map: {file}")
+        if not file.exists():
+            continue
+        if not file.is_file():
+            raise ValueError(f"Pronunciation path is not a file: {file}")
+        try:
+            entries = yaml.safe_load(file.read_text(encoding="utf-8"))
+        except yaml.YAMLError as error:
+            raise ValueError(f"Invalid pronunciation YAML: {file}") from error
+        if not isinstance(entries, dict) or any(
+            not isinstance(name, str) or not name.strip() or
+            not isinstance(spoken, str) or not spoken.strip()
+            for name, spoken in entries.items()
+        ):
+            raise ValueError(f"{file} must map written words to spoken words")
+        mapping.update({name.casefold(): spoken for name, spoken in entries.items()})
+    return mapping
+
+
+def apply_pronunciations(text: str, path: Path | str | None = None) -> str:
+    for written, spoken in load_pronunciations(path).items():
+        text = re.sub(rf"(?<!\w){re.escape(written)}(?!\w)",
+                      lambda match: spoken, text, flags=re.I)
+    return text
 
 
 def parse_markdown(markdown: str) -> tuple[dict, str]:
@@ -138,8 +172,22 @@ def speak_markdown_structure(text: str) -> str:
     text = re.sub(r"\[([^]]+)\]\([^\n)]*\)", r"\1", text)
     text = re.sub(r"\[\[([^]|]+)\|([^]]+)\]\]", r"\2", text)
     text = re.sub(r"\[\[([^]]+)\]\]", r"\1", text)
+    text = re.sub(r"\[([A-Za-z])\](?=[A-Za-z])", r"\1", text)
     text = cue_blockquotes(text)
-    text = re.sub(r"^[ \t]*[-*+][ \t]+", "", text, flags=re.M)
+    lines = []
+    bullet_number = 0
+    for line in text.split("\n"):
+        bullet = re.match(r"^[ \t]*[-*+][ \t]+(.+)$", line)
+        if bullet:
+            bullet_number += 1
+            item = bullet.group(1).strip()
+            if not re.search(r"[.!?][\"'”’]?$", item):
+                item += "."
+            lines.append(f"{ordinal_words(bullet_number).capitalize()}, {item}")
+        else:
+            bullet_number = 0
+            lines.append(line)
+    text = "\n".join(lines)
     text = re.sub(r"^[ \t]*[0-9]+\.[ \t]+", "", text, flags=re.M)
     text = re.sub(r"^#{1,6}[ \t]+([^\n]+)", lambda m: m.group(1).rstrip(" .") + ".\n", text, flags=re.M)
     text = re.sub(r"\*\*([A-Z][A-Z0-9 ,.-]{8,})\*\*", lambda m: m.group(1).capitalize(), text)
@@ -150,7 +198,7 @@ def speak_markdown_structure(text: str) -> str:
 
 def normalise_typography(text: str) -> str:
     text = unicodedata.normalize("NFC", text)
-    for old, new in {"‘": "'", "’": "'", "“": '"', "”": '"', "—": ", ", "–": " to ", "…": ".", "\u00a0": " "}.items():
+    for old, new in {"‘": "'", "’": "'", "“": '"', "”": '"', "—": ", ", "–": " to ", "→": " then ", "…": ".", "\u00a0": " "}.items():
         text = text.replace(old, new)
     return "".join(char for char in text if char in "\n\t" or unicodedata.category(char) not in {"Cc", "Cf"})
 
@@ -174,6 +222,25 @@ def number_words(number: int) -> str:
     raise AssertionError(number)
 
 
+def ordinal_words(number: int) -> str:
+    irregular = {
+        1: "first", 2: "second", 3: "third", 5: "fifth", 8: "eighth",
+        9: "ninth", 12: "twelfth", 20: "twentieth", 30: "thirtieth",
+    }
+    if number in irregular:
+        return irregular[number]
+    if number < 20:
+        return number_words(number) + "th"
+    if number < 100 and number % 10:
+        return TENS[number // 10] + "-" + ordinal_words(number % 10)
+    if number < 100:
+        return number_words(number)[:-1] + "ieth"
+    words = number_words(number)
+    if number % 100 == 0:
+        return words + "th"
+    return words.rsplit(" ", 1)[0] + " " + ordinal_words(number % 100)
+
+
 def year_words(year: int) -> str:
     if 1000 <= year < 2000:
         century, rest = divmod(year, 100)
@@ -190,7 +257,7 @@ def year_words(year: int) -> str:
 def speak_numbers(text: str) -> str:
     months = "January February March April May June July August September October November December".split()
     month_pattern = "|".join(months)
-    text = re.sub(rf"\b(\d{{1,2}}) ({month_pattern}) (\d{{4}})\b", lambda m: f"{number_words(int(m[1]))} {m[2].title()} {year_words(int(m[3]))}", text, flags=re.I)
+    text = re.sub(rf"\b(\d{{1,2}}) ({month_pattern}) (\d{{4}})\b", lambda m: f"{ordinal_words(int(m[1]))} {m[2].title()} {year_words(int(m[3]))}", text, flags=re.I)
     text = re.sub(r"\bRs[ \t]*([\d,]+)(?:[ \t]+(billion|million|thousand))?", lambda m: " ".join(filter(None, [number_words(int(m[1].replace(",", ""))), m[2], "rupees"])), text, flags=re.I)
     text = re.sub(r"\$([\d,]+)(?:[ \t]+(billion|million|thousand))?", lambda m: " ".join(filter(None, [number_words(int(m[1].replace(",", ""))), m[2], "dollars"])), text, flags=re.I)
     text = re.sub(r"\b[0-9][0-9,]*[ \t]*%", lambda m: number_words(int(re.sub(r"\D", "", m[0]))) + " percent", text)
@@ -198,11 +265,12 @@ def speak_numbers(text: str) -> str:
     return re.sub(r"\b[0-9][0-9,]*\b", lambda m: number_words(int(m[0].replace(",", ""))), text)
 
 
-def preprocess_markdown(markdown: str) -> tuple[dict, str]:
+def preprocess_markdown(markdown: str, pronunciation_file: Path | str | None = None) -> tuple[dict, str]:
     metadata, body = parse_markdown(markdown)
     text = spoken_preamble(metadata, body)
     for step in (replace_code_fences, remove_images_and_chrome, speak_markdown_structure, normalise_typography, speak_numbers):
         text = step(text)
+    text = apply_pronunciations(text, pronunciation_file)
     text = re.sub(r"(?m)^[ \t]+(?=\n|$)", "", text)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
     if not text:

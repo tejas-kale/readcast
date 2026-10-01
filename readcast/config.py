@@ -20,6 +20,7 @@ DEFAULTS = {
     "hosted_worker_url": "",
     "narration_cache_dir": "~/.cache/readcast/narrations",
     "data_dir": "~/.local/share/readcast",
+    "pronunciations_file": "",
     "speech_model": "microsoft/mai-voice-2-flash",
     "speech_voice": "",
     "image_model": "openai/gpt-image-2",
@@ -54,6 +55,7 @@ def load_config(config_dir: Path | None = None) -> dict:
     if not isinstance(stored, dict):
         raise ValueError("Readcast config.yml must contain a YAML mapping")
     config = DEFAULTS.copy()
+    config["pronunciations_file"] = str(directory / "pronunciations.yml")
     for key, value in stored.items():
         if not isinstance(key, str) or not key.strip():
             raise ValueError("Configuration setting names must be non-empty strings")
@@ -70,6 +72,8 @@ def load_config(config_dir: Path | None = None) -> dict:
             parsed = urlsplit(value)
             if parsed.scheme not in ("http", "https") or not parsed.netloc or parsed.username or parsed.password or parsed.query or parsed.fragment:
                 raise ValueError(f"Readcast setting {key} must be a URL without credentials, query or fragment")
-    for key in ("data_dir", "narration_cache_dir"):
+    for key in ("data_dir", "narration_cache_dir", "pronunciations_file"):
+        if key == "pronunciations_file" and not config[key].strip():
+            config[key] = str(directory / "pronunciations.yml")
         config[key] = str(Path(config[key]).expanduser())
     return config
