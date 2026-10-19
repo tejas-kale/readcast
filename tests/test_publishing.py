@@ -1,5 +1,6 @@
 """Feed preservation and retry state at the publishing boundary."""
 
+import hashlib
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
@@ -71,3 +72,31 @@ def test_publish_does_not_mark_complete_when_feed_verification_fails(tmp_path: P
         publishing.publish_episode(config, state, workspace, cover)
     assert "published_at" not in state
     assert state["publication_started_at"]
+
+
+def test_publish_skips_unchanged_cover_upload(monkeypatch, tmp_path):
+    workspace = tmp_path / "work"
+    workspace.mkdir()
+    (workspace / "episode.mp3").write_bytes(b"mp3")
+    cover = tmp_path / "cover.png"
+    cover.write_bytes(b"png")
+    blob_sha = hashlib.sha1(b"blob 3\0png", usedforsecurity=False).hexdigest()
+    state = {"id": "abc", "guid": "urn:readcast:episode:abc", "title": "Episode"}
+    config = {"github_pages_url": "https://example.github.io/show/"}
+    monkeypatch.setattr(publishing, "upload_episode", lambda config, state, path: state.update(audio_url="https://worker.example/audio/a.mp3", audio_size=3) or state["audio_url"])
+    monkeypatch.setenv("GITHUB_TOKEN", "fake-token")
+    puts = []
+
+    def fake_github(owner, repo, path, token, method="GET", payload=None):
+        if method == "PUT":
+            puts.append(path)
+            return 201, {}
+        return (200, {"sha": blob_sha}) if path == "cover.png" else (404, {})
+
+    monkeypatch.setattr(publishing, "_github_request", fake_github)
+    monkeypatch.setattr(publishing, "_wait_for_visibility", lambda check: check())
+    monkeypatch.setattr(publishing, "_verify", lambda *args: None)
+    monkeypatch.setattr(publishing, "_http", lambda *args, **kwargs: (404, {}, b""))
+    with pytest.raises(RuntimeError, match="not reachable"):
+        publishing.publish_episode(config, state, workspace, cover)
+    assert puts == ["feed.xml"]

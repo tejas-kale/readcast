@@ -106,6 +106,8 @@ def set_approved(config: dict[str, Any], candidate: Path | None = None) -> Path:
     """Copy a valid candidate to the persistent approved-cover path."""
     default_candidate, approved = _cover_paths(config)
     source = Path(candidate) if candidate is not None else default_candidate
+    if not source.is_file():
+        raise ValueError(f"No cover candidate at {source}. Run `readcast cover generate` first.")
     _validate_png(source)
     approved.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
@@ -123,5 +125,9 @@ def set_approved(config: dict[str, Any], candidate: Path | None = None) -> Path:
 def approved_cover(config: dict[str, Any]) -> Path:
     """Return the approved cover path after validating the stored artwork."""
     _, approved = _cover_paths(config)
+    if not approved.is_file():
+        raise ValueError(
+            "No approved podcast cover. Run `readcast cover generate` then `readcast cover set`."
+        )
     _validate_png(approved)
     return approved

@@ -54,7 +54,7 @@ def _verify(url: str, content_type: str | None = None, length: int | None = None
         raise RuntimeError(f"Public resource has unexpected byte length at {url}.")
 
 
-def _wait_for_visibility(check, timeout: int = 120) -> None:
+def _wait_for_visibility(check, timeout: int = 600) -> None:
     deadline = time.monotonic() + timeout
     delay = 2
     while True:
@@ -238,8 +238,11 @@ def publish_episode(config: dict, state: dict, workspace: Path,
     status, current_cover = _github_request(owner, repo, "cover.png", token)
     if status not in (200, 404):
         raise RuntimeError(f"Could not inspect GitHub Pages cover.png (HTTP {status}).")
-    _contents_put(owner, repo, "cover.png", cover_data, token,
-                  current_cover.get("sha") if status == 200 else None)
+    remote_sha = current_cover.get("sha") if status == 200 else None
+    # Each upload triggers a Pages build, which can take many minutes, so skip unchanged artwork.
+    blob_sha = hashlib.sha1(b"blob %d\0" % len(cover_data) + cover_data, usedforsecurity=False).hexdigest()
+    if remote_sha != blob_sha:
+        _contents_put(owner, repo, "cover.png", cover_data, token, remote_sha)
     _wait_for_visibility(lambda: _verify(cover_url, "image/png", len(cover_data)))
     status, current = _github_request(owner, repo, "feed.xml", token)
     if status == 404:
